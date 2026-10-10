@@ -22,7 +22,7 @@ const transformControls = new TransformControls(camera, renderer.domElement);
 transformControls.setMode('translate');
 scene.add(transformControls.getHelper());
 
-// Use the same controls for moving and rotating the selected cube.
+// Use the same controls for moving, rotating, and scaling the selected cube.
 window.addEventListener('keydown', (event) => {
   if (transformControls.dragging) return;
 
@@ -31,6 +31,8 @@ window.addEventListener('keydown', (event) => {
     transformControls.setMode('translate');
   } else if (key === 'r') {
     transformControls.setMode('rotate');
+  } else if (key === 's') {
+    transformControls.setMode('scale');
   }
 });
 
