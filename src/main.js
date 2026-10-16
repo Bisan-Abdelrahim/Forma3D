@@ -22,6 +22,7 @@ document.querySelector('#app').innerHTML = `
 
     <button id="vertex-mode">Vertex (1)</button>
     <button id="edge-mode">Edge (2)</button>
+    <button id="face-mode">Face (3)</button>
 
     <button id="delete">Delete</button>
     <button id="undo">Undo</button>
@@ -67,21 +68,18 @@ document.querySelector('#app').innerHTML = `
   </main>
 `;
 
+// ==========================================
+// THREE.JS SETUP
+// ==========================================
+
 const viewport = document.querySelector('#viewport');
 const outliner = document.querySelector('#outliner');
 const properties = document.querySelector('#properties');
 
-// ==========================================
-// THREE.JS SCENE
-// ==========================================
-
 const scene = new THREE.Scene();
 
 const camera = new THREE.PerspectiveCamera(
-  75,
-  1,
-  0.1,
-  1000
+  75, 1, 0.1, 1000
 );
 
 camera.position.set(5, 4, 5);
@@ -91,10 +89,8 @@ const renderer = new THREE.WebGLRenderer({
 });
 
 renderer.domElement.tabIndex = 0;
-
 viewport.appendChild(renderer.domElement);
 
-// Transform Controls
 const transformControls = new TransformControls(
   camera,
   renderer.domElement
@@ -103,7 +99,6 @@ const transformControls = new TransformControls(
 transformControls.setMode('translate');
 scene.add(transformControls.getHelper());
 
-// Orbit Controls
 const controls = new OrbitControls(
   camera,
   renderer.domElement
@@ -113,7 +108,6 @@ controls.enableDamping = true;
 controls.enableZoom = true;
 controls.enablePan = true;
 
-// Grid and axes
 const grid = new THREE.GridHelper(20, 20);
 grid.position.y = -1;
 
@@ -125,7 +119,6 @@ scene.add(new THREE.AxesHelper(3));
 // ==========================================
 
 const objects = [];
-
 let selectedObject = null;
 
 const nameCounts = {
@@ -149,34 +142,31 @@ let dragStartSnapshot = null;
 // ==========================================
 
 let editMode = false;
-
 let meshSelectionMode = 'vertex';
 
 let previousObjectTransformMode = 'translate';
 
-// Vertex markers
+// Vertex selection
 let vertexMarkers = [];
-
 const selectedVertexMarkers = new Set();
 
-// Invisible pivot for moving selected vertices
+// Shared movement pivot
 const vertexPivot = new THREE.Object3D();
-
 const previousPivotPosition = new THREE.Vector3();
 
-// Edge markers
+// Edge selection
 const edgeMarkers = [];
-
 let selectedEdgeMarker = null;
 
+// Face selection
+let selectedFaceIndex = null;
+
 // ==========================================
-// VERTEX MATERIALS
+// VERTEX VISUALS
 // ==========================================
 
 const vertexMarkerGeometry = new THREE.SphereGeometry(
-  0.09,
-  12,
-  8
+  0.09, 12, 8
 );
 
 const vertexMarkerMaterial = new THREE.MeshBasicMaterial({
@@ -192,14 +182,11 @@ const selectedVertexMaterial = new THREE.MeshBasicMaterial({
 });
 
 // ==========================================
-// EDGE MATERIALS
+// EDGE VISUALS
 // ==========================================
 
 const edgeMarkerGeometry = new THREE.CylinderGeometry(
-  0.065,
-  0.065,
-  1,
-  8
+  0.065, 0.065, 1, 8
 );
 
 const edgeMarkerMaterial = new THREE.MeshBasicMaterial({
@@ -219,18 +206,50 @@ const selectedEdgeMaterial = new THREE.MeshBasicMaterial({
 const edgeUpDirection = new THREE.Vector3(0, 1, 0);
 
 // ==========================================
-// UPDATE VERTEX SELECTION GIZMO
+// FACE HIGHLIGHT VISUAL
+// ==========================================
+
+// A quad is made from two triangles.
+// We use six positions for the highlight.
+
+const faceHighlightGeometry = new THREE.BufferGeometry();
+
+faceHighlightGeometry.setAttribute(
+  'position',
+  new THREE.BufferAttribute(
+    new Float32Array(18),
+    3
+  )
+);
+
+const faceHighlightMaterial = new THREE.MeshBasicMaterial({
+  color: 0x00bfff,
+  transparent: true,
+  opacity: 0.4,
+  side: THREE.DoubleSide,
+  depthTest: false,
+  depthWrite: false
+});
+
+const faceHighlight = new THREE.Mesh(
+  faceHighlightGeometry,
+  faceHighlightMaterial
+);
+
+faceHighlight.renderOrder = 11;
+
+// ==========================================
+// UPDATE SELECTION GIZMO
 // ==========================================
 
 function updateVertexSelectionGizmo() {
-  // Update colors of vertex markers
+  // Refresh vertex colors
   for (const marker of vertexMarkers) {
     marker.material = selectedVertexMarkers.has(marker)
       ? selectedVertexMaterial
       : vertexMarkerMaterial;
   }
 
-  // No vertices selected
   if (
     !editMode ||
     !selectedObject ||
@@ -241,7 +260,6 @@ function updateVertexSelectionGizmo() {
     return;
   }
 
-  // Find the center of selected vertices
   const center = new THREE.Vector3();
 
   for (const marker of selectedVertexMarkers) {
@@ -250,17 +268,14 @@ function updateVertexSelectionGizmo() {
 
   center.divideScalar(selectedVertexMarkers.size);
 
-  // Attach pivot to selected object
   if (vertexPivot.parent !== selectedObject) {
     vertexPivot.removeFromParent();
     selectedObject.add(vertexPivot);
   }
 
   vertexPivot.position.copy(center);
-
   previousPivotPosition.copy(center);
 
-  // Show movement arrows at selection center
   transformControls.setMode('translate');
   transformControls.attach(vertexPivot);
 }
@@ -274,13 +289,11 @@ function selectVertexMarker(marker, multiSelect = false) {
     return;
   }
 
-  // Normal click clears previous selection
   if (!multiSelect) {
     selectedVertexMarkers.clear();
   }
 
   if (marker) {
-    // Shift + click toggles vertex selection
     if (
       multiSelect &&
       selectedVertexMarkers.has(marker)
@@ -292,6 +305,15 @@ function selectVertexMarker(marker, multiSelect = false) {
   }
 
   updateVertexSelectionGizmo();
+}
+
+// ==========================================
+// CLEAR FACE SELECTION
+// ==========================================
+
+function clearFaceSelection() {
+  selectedFaceIndex = null;
+  faceHighlight.removeFromParent();
 }
 
 // ==========================================
@@ -316,13 +338,13 @@ function clearVertexMarkers() {
   selectedVertexMarkers.clear();
 
   clearEdgeMarkers();
+  clearFaceSelection();
 
   transformControls.detach();
-
   vertexPivot.removeFromParent();
 
   for (const marker of vertexMarkers) {
-    marker.parent?.remove(marker);
+    marker.removeFromParent();
   }
 
   vertexMarkers = [];
@@ -342,12 +364,11 @@ function showCubeVertices(object) {
     return;
   }
 
-  const positions =
-    object.geometry.getAttribute('position');
-
-  // BoxGeometry has 24 position entries,
-  // representing 8 geometric corners.
+  const positions = object.geometry.getAttribute('position');
   const vertexGroups = new Map();
+
+  // BoxGeometry has 24 position entries
+  // but only 8 physical corners.
 
   for (let i = 0; i < positions.count; i++) {
     const x = positions.getX(i);
@@ -377,13 +398,11 @@ function showCubeVertices(object) {
     );
 
     marker.position.copy(group.position);
-
     marker.userData.vertexIndices = group.indices;
 
     marker.renderOrder = 10;
 
     object.add(marker);
-
     vertexMarkers.push(marker);
   }
 }
@@ -394,15 +413,11 @@ function showCubeVertices(object) {
 
 function updateEdgeMarkers() {
   for (const edge of edgeMarkers) {
-    const start =
-      edge.userData.startMarker.position;
-
-    const end =
-      edge.userData.endMarker.position;
+    const start = edge.userData.startMarker.position;
+    const end = edge.userData.endMarker.position;
 
     const direction = new THREE.Vector3().subVectors(
-      end,
-      start
+      end, start
     );
 
     const length = direction.length();
@@ -414,18 +429,16 @@ function updateEdgeMarkers() {
 
     edge.visible = true;
 
-    // Position edge at its midpoint
-    edge.position.copy(start)
+    edge.position
+      .copy(start)
       .add(end)
       .multiplyScalar(0.5);
 
-    // Rotate cylinder along the edge
     edge.quaternion.setFromUnitVectors(
       edgeUpDirection,
       direction.normalize()
     );
 
-    // Match edge length
     edge.scale.set(1, length, 1);
   }
 }
@@ -447,16 +460,11 @@ function showCubeEdges() {
   const positions =
     selectedObject.geometry.getAttribute('position');
 
-  // Current version supports a standard BoxGeometry
-  // with one segment per dimension.
   if (positions.count !== 24) {
-    console.warn(
-      'Unsupported cube topology for Edge Mode.'
-    );
+    console.warn('Unsupported cube topology.');
     return;
   }
 
-  // Map geometry indices to corner markers
   const markerByIndex = new Map();
 
   for (const marker of vertexMarkers) {
@@ -465,8 +473,6 @@ function showCubeEdges() {
     }
   }
 
-  // Four perimeter edges of each quad face
-  // Avoid the internal triangle diagonal.
   const perimeterPairs = [
     [0, 1],
     [1, 3],
@@ -476,8 +482,6 @@ function showCubeEdges() {
 
   const addedEdges = new Set();
 
-  // BoxGeometry contains 6 faces,
-  // each represented by 4 position entries.
   for (let faceStart = 0; faceStart < 24; faceStart += 4) {
     for (const [aOffset, bOffset] of perimeterPairs) {
       const startMarker = markerByIndex.get(
@@ -488,31 +492,19 @@ function showCubeEdges() {
         faceStart + bOffset
       );
 
-      if (!startMarker || !endMarker) {
-        continue;
-      }
+      if (!startMarker || !endMarker) continue;
+      if (startMarker === endMarker) continue;
 
-      if (startMarker === endMarker) {
-        continue;
-      }
+      const startId = vertexMarkers.indexOf(startMarker);
+      const endId = vertexMarkers.indexOf(endMarker);
 
-      const startId =
-        vertexMarkers.indexOf(startMarker);
-
-      const endId =
-        vertexMarkers.indexOf(endMarker);
-
-      // The same physical edge belongs to two faces,
-      // so create it only once.
-      const edgeKey = [startId, endId]
+      const key = [startId, endId]
         .sort((a, b) => a - b)
         .join(':');
 
-      if (addedEdges.has(edgeKey)) {
-        continue;
-      }
+      if (addedEdges.has(key)) continue;
 
-      addedEdges.add(edgeKey);
+      addedEdges.add(key);
 
       const edge = new THREE.Mesh(
         edgeMarkerGeometry,
@@ -525,7 +517,6 @@ function showCubeEdges() {
       edge.renderOrder = 9;
 
       selectedObject.add(edge);
-
       edgeMarkers.push(edge);
     }
   }
@@ -543,12 +534,9 @@ function selectEdgeMarker(edge) {
   }
 
   selectedEdgeMarker = edge;
-
-  // Clear previous vertex selection
   selectedVertexMarkers.clear();
 
   if (edge) {
-    // Selecting an edge means selecting its 2 endpoints
     selectedVertexMarkers.add(
       edge.userData.startMarker
     );
@@ -558,20 +546,120 @@ function selectEdgeMarker(edge) {
     );
   }
 
-  // Highlight selected edge
   for (const item of edgeMarkers) {
-    item.material =
-      item === selectedEdgeMarker
-        ? selectedEdgeMaterial
-        : edgeMarkerMaterial;
+    item.material = item === selectedEdgeMarker
+      ? selectedEdgeMaterial
+      : edgeMarkerMaterial;
   }
 
-  // Use the existing multi-vertex movement system
   updateVertexSelectionGizmo();
 }
 
 // ==========================================
-// SWITCH VERTEX / EDGE MODE
+// UPDATE FACE HIGHLIGHT
+// ==========================================
+
+function updateFaceHighlight() {
+  if (
+    !selectedObject ||
+    selectedFaceIndex === null
+  ) {
+    faceHighlight.removeFromParent();
+    return;
+  }
+
+  const geometry = selectedObject.geometry;
+  const positions = geometry.getAttribute('position');
+  const index = geometry.getIndex();
+
+  // Each cube quad uses 2 triangles = 6 indices.
+  if (
+    !index ||
+    positions.count !== 24 ||
+    index.count !== 36
+  ) {
+    faceHighlight.removeFromParent();
+    return;
+  }
+
+  const highlightPositions =
+    faceHighlightGeometry.getAttribute('position');
+
+  const start = selectedFaceIndex * 6;
+
+  for (let i = 0; i < 6; i++) {
+    const vertexIndex = index.getX(start + i);
+
+    highlightPositions.setXYZ(
+      i,
+      positions.getX(vertexIndex),
+      positions.getY(vertexIndex),
+      positions.getZ(vertexIndex)
+    );
+  }
+
+  highlightPositions.needsUpdate = true;
+  faceHighlightGeometry.computeBoundingSphere();
+
+  if (faceHighlight.parent !== selectedObject) {
+    faceHighlight.removeFromParent();
+    selectedObject.add(faceHighlight);
+  }
+}
+
+// ==========================================
+// FACE SELECTION
+// ==========================================
+
+function selectFaceByTriangle(triangleIndex) {
+  if (!editMode || meshSelectionMode !== 'face') {
+    return;
+  }
+
+  selectedVertexMarkers.clear();
+
+  const geometry = selectedObject.geometry;
+  const positions = geometry.getAttribute('position');
+  const index = geometry.getIndex();
+
+  if (
+    triangleIndex === null ||
+    triangleIndex === undefined ||
+    !Number.isInteger(triangleIndex) ||
+    triangleIndex < 0 ||
+    triangleIndex >= 12 ||
+    !index ||
+    positions.count !== 24 ||
+    index.count !== 36
+  ) {
+    clearFaceSelection();
+    updateVertexSelectionGizmo();
+    return;
+  }
+
+  // Every two triangles form one cube face.
+  selectedFaceIndex = Math.floor(triangleIndex / 2);
+
+  // Each BoxGeometry face has four position entries.
+  const faceStart = selectedFaceIndex * 4;
+
+  // Find the four physical corner markers.
+  for (let i = faceStart; i < faceStart + 4; i++) {
+    const marker = vertexMarkers.find(item =>
+      item.userData.vertexIndices.includes(i)
+    );
+
+    if (marker) {
+      selectedVertexMarkers.add(marker);
+    }
+  }
+
+  updateVertexSelectionGizmo();
+  updateFaceHighlight();
+}
+
+// ==========================================
+// SWITCH MESH SELECTION MODE
 // ==========================================
 
 function setMeshSelectionMode(mode) {
@@ -585,39 +673,35 @@ function setMeshSelectionMode(mode) {
 
   if (
     mode !== 'vertex' &&
-    mode !== 'edge'
+    mode !== 'edge' &&
+    mode !== 'face'
   ) {
     return;
   }
 
-  meshSelectionMode = mode;
-
-  // Reset previous selection
+  // Reset previous mode selection
   selectedVertexMarkers.clear();
-  selectedEdgeMarker = null;
+
+  clearEdgeMarkers();
+  clearFaceSelection();
+
+  meshSelectionMode = mode;
 
   updateVertexSelectionGizmo();
 
+  // Vertex markers are visible only in Vertex Mode.
+  for (const marker of vertexMarkers) {
+    marker.visible = mode === 'vertex';
+  }
+
   if (mode === 'edge') {
-    // Hide vertex markers
-    for (const marker of vertexMarkers) {
-      marker.visible = false;
-    }
-
     showCubeEdges();
-
-  } else {
-    // Return to Vertex Mode
-    clearEdgeMarkers();
-
-    for (const marker of vertexMarkers) {
-      marker.visible = true;
-    }
   }
 
   updateButtons();
 }
 
+// Toolbar mode buttons
 document.querySelector('#vertex-mode').addEventListener(
   'click',
   () => setMeshSelectionMode('vertex')
@@ -628,8 +712,13 @@ document.querySelector('#edge-mode').addEventListener(
   () => setMeshSelectionMode('edge')
 );
 
+document.querySelector('#face-mode').addEventListener(
+  'click',
+  () => setMeshSelectionMode('face')
+);
+
 // ==========================================
-// UPDATE SELECTED VERTEX GEOMETRY
+// UPDATE MESH GEOMETRY
 // ==========================================
 
 function updateSelectedVertexGeometry() {
@@ -642,7 +731,6 @@ function updateSelectedVertexGeometry() {
     return;
   }
 
-  // Calculate how far the movement gizmo moved
   const delta = new THREE.Vector3().subVectors(
     vertexPivot.position,
     previousPivotPosition
@@ -653,19 +741,14 @@ function updateSelectedVertexGeometry() {
   }
 
   const geometry = selectedObject.geometry;
+  const positions = geometry.getAttribute('position');
 
-  const positions =
-    geometry.getAttribute('position');
-
-  // Move all selected geometric corners
+  // Move all selected physical vertices.
   for (const marker of selectedVertexMarkers) {
     marker.position.add(delta);
 
-    const indices =
-      marker.userData.vertexIndices;
-
-    // Keep duplicate BoxGeometry positions together
-    for (const index of indices) {
+    // Keep duplicate BoxGeometry entries together.
+    for (const index of marker.userData.vertexIndices) {
       positions.setXYZ(
         index,
         marker.position.x,
@@ -675,19 +758,22 @@ function updateSelectedVertexGeometry() {
     }
   }
 
-  // Store latest pivot position
   previousPivotPosition.copy(vertexPivot.position);
 
-  // Refresh geometry
   positions.needsUpdate = true;
 
   geometry.computeVertexNormals();
   geometry.computeBoundingBox();
   geometry.computeBoundingSphere();
 
-  // Refresh edge visuals after deformation
+  // Refresh edges after moving their endpoints.
   if (meshSelectionMode === 'edge') {
     updateEdgeMarkers();
+  }
+
+  // Refresh face highlight after deformation.
+  if (meshSelectionMode === 'face') {
+    updateFaceHighlight();
   }
 }
 
@@ -696,12 +782,9 @@ function updateSelectedVertexGeometry() {
 // ==========================================
 
 function toggleEditMode() {
-  if (transformControls.dragging) {
-    return;
-  }
+  if (transformControls.dragging) return;
 
   if (editMode) {
-    // Exit Edit Mode
     editMode = false;
 
     clearVertexMarkers();
@@ -715,7 +798,6 @@ function toggleEditMode() {
     }
 
   } else {
-    // Mesh Edit Mode currently supports cubes
     if (
       !selectedObject ||
       selectedObject.userData.type !== 'Cube'
@@ -727,8 +809,6 @@ function toggleEditMode() {
       transformControls.getMode();
 
     editMode = true;
-
-    // Always enter in Vertex Mode
     meshSelectionMode = 'vertex';
 
     transformControls.detach();
@@ -795,7 +875,6 @@ function createMesh(type, dimensions = {}) {
 
 function getDimensions(object) {
   const params = object.geometry.parameters;
-
   const type = object.userData.type;
 
   if (type === 'Cube') {
@@ -838,13 +917,12 @@ function giveObjectName(object, type) {
 // ==========================================
 
 function selectObject(object) {
-  // Keep selection if clicking the same object
-  // while working in Edit Mode
+  // Clicking the same object in Edit Mode
+  // should not reset the mesh selection.
   if (editMode && object === selectedObject) {
     return;
   }
 
-  // Exit Edit Mode if another object is selected
   if (editMode && object !== selectedObject) {
     editMode = false;
 
@@ -867,7 +945,6 @@ function selectObject(object) {
     if (!editMode) {
       transformControls.attach(object);
     }
-
   } else {
     transformControls.detach();
   }
@@ -917,7 +994,6 @@ const propertyInputs = [];
 
 for (const property of ['position', 'rotation', 'scale']) {
   const fieldset = document.createElement('fieldset');
-
   const legend = document.createElement('legend');
 
   legend.textContent =
@@ -1002,22 +1078,23 @@ function updateProperties() {
 
     if (!selectedObject) {
       input.value = '';
-    } else {
-      let value = selectedObject[property][axis];
-
-      if (property === 'rotation') {
-        value = THREE.MathUtils.radToDeg(value);
-      }
-
-      input.value = String(
-        Number(value.toFixed(4))
-      );
+      continue;
     }
+
+    let value = selectedObject[property][axis];
+
+    if (property === 'rotation') {
+      value = THREE.MathUtils.radToDeg(value);
+    }
+
+    input.value = String(
+      Number(value.toFixed(4))
+    );
   }
 }
 
 // ==========================================
-// UNDO / REDO SNAPSHOT SYSTEM
+// UNDO / REDO
 // ==========================================
 
 function takeSnapshot() {
@@ -1029,7 +1106,7 @@ function takeSnapshot() {
 
       dimensions: getDimensions(object),
 
-      // Save actual cube geometry for mesh edits
+      // Preserve cube deformation.
       vertexPositions:
         object.userData.type === 'Cube'
           ? Array.from(
@@ -1046,7 +1123,6 @@ function takeSnapshot() {
       selectedObject?.userData.editorId ?? null,
 
     nameCounts: { ...nameCounts },
-
     nextObjectId
   };
 }
@@ -1061,34 +1137,25 @@ function recordAction(before) {
     return;
   }
 
-  undoHistory.push({
-    before,
-    after
-  });
-
+  undoHistory.push({ before, after });
   redoHistory.length = 0;
 
   updateButtons();
 }
 
 function restoreSnapshot(snapshot) {
-  // Reset Edit Mode before restoring geometry
+  // Exit Edit Mode before replacing meshes.
   selectObject(null);
 
   for (const object of objects) {
     scene.remove(object);
-
     object.geometry.dispose();
     object.material.dispose();
   }
 
   objects.length = 0;
 
-  Object.assign(
-    nameCounts,
-    snapshot.nameCounts
-  );
-
+  Object.assign(nameCounts, snapshot.nameCounts);
   nextObjectId = snapshot.nextObjectId;
 
   for (const saved of snapshot.objects) {
@@ -1097,7 +1164,6 @@ function restoreSnapshot(snapshot) {
       saved.dimensions
     );
 
-    // Restore edited mesh positions
     if (saved.vertexPositions) {
       const positions =
         object.geometry.getAttribute('position');
@@ -1136,7 +1202,7 @@ function restoreSnapshot(snapshot) {
 }
 
 // ==========================================
-// TOOLBAR BUTTON STATES
+// BUTTON STATES
 // ==========================================
 
 function updateButtons() {
@@ -1163,7 +1229,6 @@ function updateButtons() {
   document.querySelector('#redo').disabled =
     dragging || redoHistory.length === 0;
 
-  // Edit Mode button
   const editButton =
     document.querySelector('#edit-mode');
 
@@ -1183,28 +1248,18 @@ function updateButtons() {
     String(editMode)
   );
 
-  // Vertex and Edge buttons
-  const vertexModeButton =
-    document.querySelector('#vertex-mode');
+  // Mesh selection buttons
+  for (const mode of ['vertex', 'edge', 'face']) {
+    const button =
+      document.querySelector(`#${mode}-mode`);
 
-  const edgeModeButton =
-    document.querySelector('#edge-mode');
+    button.disabled = !editMode || dragging;
 
-  vertexModeButton.disabled =
-    !editMode || dragging;
-
-  edgeModeButton.disabled =
-    !editMode || dragging;
-
-  vertexModeButton.setAttribute(
-    'aria-pressed',
-    String(editMode && meshSelectionMode === 'vertex')
-  );
-
-  edgeModeButton.setAttribute(
-    'aria-pressed',
-    String(editMode && meshSelectionMode === 'edge')
-  );
+    button.setAttribute(
+      'aria-pressed',
+      String(editMode && meshSelectionMode === mode)
+    );
+  }
 }
 
 // ==========================================
@@ -1229,17 +1284,14 @@ function addObject(
   );
 
   objects.push(object);
-
   scene.add(object);
 
   selectObject(object);
-
   recordAction(before);
 
   return object;
 }
 
-// Add buttons
 for (const type of ['Cube', 'Sphere', 'Cylinder']) {
   document
     .getElementById(`add-${type.toLowerCase()}`)
@@ -1255,9 +1307,7 @@ for (const type of ['Cube', 'Sphere', 'Cylinder']) {
 document.querySelector('#duplicate').addEventListener(
   'click',
   () => {
-    if (!selectedObject) {
-      return;
-    }
+    if (!selectedObject) return;
 
     const before = takeSnapshot();
 
@@ -1266,11 +1316,8 @@ document.querySelector('#duplicate').addEventListener(
       getDimensions(selectedObject)
     );
 
-    // Preserve edited geometry
     duplicate.geometry.dispose();
-
-    duplicate.geometry =
-      selectedObject.geometry.clone();
+    duplicate.geometry = selectedObject.geometry.clone();
 
     duplicate.geometry.parameters = {
       ...selectedObject.geometry.parameters
@@ -1294,11 +1341,9 @@ document.querySelector('#duplicate').addEventListener(
     );
 
     objects.push(duplicate);
-
     scene.add(duplicate);
 
     selectObject(duplicate);
-
     recordAction(before);
   }
 );
@@ -1308,9 +1353,7 @@ document.querySelector('#duplicate').addEventListener(
 // ==========================================
 
 function deleteObject(object) {
-  if (!object) {
-    return;
-  }
+  if (!object) return;
 
   const index = objects.indexOf(object);
 
@@ -1325,22 +1368,18 @@ function deleteObject(object) {
   }
 
   objects.splice(index, 1);
-
   scene.remove(object);
 
   object.geometry.dispose();
   object.material.dispose();
 
   updateOutliner();
-
   recordAction(before);
 }
 
 document.querySelector('#delete').addEventListener(
   'click',
-  () => {
-    deleteObject(selectedObject);
-  }
+  () => deleteObject(selectedObject)
 );
 
 // ==========================================
@@ -1360,7 +1399,6 @@ function executeCommand(command) {
     );
   }
 
-  // CREATE
   if (command.action === 'create') {
     const types = {
       cube: 'Cube',
@@ -1381,7 +1419,6 @@ function executeCommand(command) {
     );
   }
 
-  // FIND TARGET
   let object;
 
   if (command.target === 'selected') {
@@ -1397,13 +1434,11 @@ function executeCommand(command) {
     throw new Error('Target object not found.');
   }
 
-  // DELETE
   if (command.action === 'delete') {
     deleteObject(object);
     return;
   }
 
-  // MOVE / ROTATE / SCALE
   const properties = {
     move: 'position',
     rotate: 'rotation',
@@ -1431,7 +1466,6 @@ function executeCommand(command) {
   object.updateMatrixWorld(true);
 
   selectObject(object);
-
   recordAction(before);
 
   return object;
@@ -1498,9 +1532,7 @@ async function sendAIInstruction() {
     return;
   }
 
-  if (aiBusy) {
-    return;
-  }
+  if (aiBusy) return;
 
   if (editMode) {
     aiStatus.textContent =
@@ -1515,7 +1547,6 @@ async function sendAIInstruction() {
   }
 
   aiBusy = true;
-
   aiSend.disabled = true;
   aiInput.disabled = true;
 
@@ -1544,23 +1575,16 @@ async function sendAIInstruction() {
       `Success: ${command.action}` +
       (result ? ` - ${result.name}` : '');
 
-    console.log(
-      'AI command executed:',
-      command
-    );
+    console.log('AI command executed:', command);
 
   } catch (error) {
-    console.error(
-      'Forma3D AI error:',
-      error
-    );
+    console.error('Forma3D AI error:', error);
 
     aiStatus.textContent =
       `Error: ${error.message}`;
 
   } finally {
     aiBusy = false;
-
     aiSend.disabled = false;
     aiInput.disabled = false;
   }
@@ -1571,7 +1595,6 @@ aiSend.addEventListener(
   sendAIInstruction
 );
 
-// Enter sends, Shift+Enter adds a line
 aiInput.addEventListener('keydown', event => {
   if (
     event.key === 'Enter' &&
@@ -1592,12 +1615,9 @@ document.querySelector('#undo').addEventListener(
   () => {
     const action = undoHistory.pop();
 
-    if (!action) {
-      return;
-    }
+    if (!action) return;
 
     redoHistory.push(action);
-
     restoreSnapshot(action.before);
   }
 );
@@ -1607,12 +1627,9 @@ document.querySelector('#redo').addEventListener(
   () => {
     const action = redoHistory.pop();
 
-    if (!action) {
-      return;
-    }
+    if (!action) return;
 
     undoHistory.push(action);
-
     restoreSnapshot(action.after);
   }
 );
@@ -1647,7 +1664,7 @@ window.addEventListener('keydown', event => {
     return;
   }
 
-  // Tab switches Object / Edit Mode
+  // Tab: Object / Edit Mode
   if (
     event.code === 'Tab' &&
     !event.shiftKey &&
@@ -1658,25 +1675,26 @@ window.addEventListener('keydown', event => {
     )
   ) {
     event.preventDefault();
-
     toggleEditMode();
-
     return;
   }
 
-  // Mesh Edit Mode shortcuts
+  // Mesh selection shortcuts
   if (editMode) {
     if (event.code === 'Digit1') {
       setMeshSelectionMode('vertex');
 
     } else if (event.code === 'Digit2') {
       setMeshSelectionMode('edge');
+
+    } else if (event.code === 'Digit3') {
+      setMeshSelectionMode('face');
     }
 
     return;
   }
 
-  // Object Mode shortcuts
+  // Object transformations
   if (event.code === 'KeyM') {
     transformControls.setMode('translate');
 
@@ -1695,7 +1713,6 @@ window.addEventListener('keydown', event => {
 transformControls.addEventListener(
   'mouseDown',
   () => {
-    // Snapshot before dragging
     dragStartSnapshot = takeSnapshot();
   }
 );
@@ -1703,9 +1720,8 @@ transformControls.addEventListener(
 transformControls.addEventListener(
   'objectChange',
   () => {
-    // Applies to Vertex and Edge Mode
+    // Works for Vertex / Edge / Face modes.
     updateSelectedVertexGeometry();
-
     updateProperties();
   }
 );
@@ -1737,7 +1753,6 @@ transformControls.addEventListener(
 // ==========================================
 
 const raycaster = new THREE.Raycaster();
-
 const mouse = new THREE.Vector2();
 
 let clickStart = null;
@@ -1746,9 +1761,7 @@ let isDragging = false;
 renderer.domElement.addEventListener(
   'pointerdown',
   event => {
-    if (event.button !== 0) {
-      return;
-    }
+    if (event.button !== 0) return;
 
     renderer.domElement.focus();
 
@@ -1826,7 +1839,6 @@ renderer.domElement.addEventListener(
       -((event.clientY - bounds.top) / bounds.height) * 2 + 1;
 
     scene.updateMatrixWorld(true);
-
     raycaster.setFromCamera(mouse, camera);
 
     // ======================================
@@ -1834,6 +1846,7 @@ renderer.domElement.addEventListener(
     // ======================================
 
     if (editMode) {
+
       // EDGE MODE
       if (meshSelectionMode === 'edge') {
         const edgeHits = raycaster.intersectObjects(
@@ -1846,9 +1859,10 @@ renderer.domElement.addEventListener(
             ? edgeHits[0].object
             : null
         );
+      }
 
-      } else {
-        // VERTEX MODE
+      // VERTEX MODE
+      else if (meshSelectionMode === 'vertex') {
         const vertexHits = raycaster.intersectObjects(
           vertexMarkers,
           false
@@ -1863,6 +1877,22 @@ renderer.domElement.addEventListener(
         } else if (!event.shiftKey) {
           selectVertexMarker(null);
         }
+      }
+
+      // FACE MODE
+      else if (meshSelectionMode === 'face') {
+        // Test only the cube mesh, not its children.
+        const faceHits = raycaster.intersectObject(
+          selectedObject,
+          false
+        );
+
+        const triangleIndex =
+          faceHits.length > 0
+            ? faceHits[0].faceIndex
+            : null;
+
+        selectFaceByTriangle(triangleIndex);
       }
 
       return;
@@ -1905,7 +1935,6 @@ const cube = createMesh('Cube');
 giveObjectName(cube, 'Cube');
 
 objects.push(cube);
-
 scene.add(cube);
 
 selectObject(null);
@@ -1915,18 +1944,10 @@ selectObject(null);
 // ==========================================
 
 function resizeRenderer() {
-  const width = Math.max(
-    1,
-    viewport.clientWidth
-  );
-
-  const height = Math.max(
-    1,
-    viewport.clientHeight
-  );
+  const width = Math.max(1, viewport.clientWidth);
+  const height = Math.max(1, viewport.clientHeight);
 
   camera.aspect = width / height;
-
   camera.updateProjectionMatrix();
 
   renderer.setSize(width, height);
