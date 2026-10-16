@@ -37,3 +37,46 @@ fieldset { margin: 0 0 12px; padding: 8px; }
 legend { text-transform: capitalize; }
 fieldset label { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
 fieldset input { width: 100%; min-width: 0; padding: 4px; box-sizing: border-box; }
+
+/* ===============================
+   AI INPUT PANEL
+   =============================== */
+
+#ai-panel {
+  padding: 10px 12px;
+  border-bottom: 1px solid #bbb;
+  background: #e8e8e8;
+}
+
+#ai-panel label {
+  display: block;
+  font-weight: bold;
+  margin-bottom: 8px;
+}
+
+.ai-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+#ai-instruction {
+  flex: 1;
+  min-width: 0;
+  padding: 8px;
+  font-family: Arial, sans-serif;
+  font-size: 14px;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+#ai-send {
+  padding: 8px 18px;
+  font-weight: bold;
+}
+
+#ai-status {
+  margin: 8px 0 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
