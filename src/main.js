@@ -16,14 +16,17 @@ document.querySelector('#app').innerHTML = `
     <button id="add-sphere">Add Sphere</button>
     <button id="add-cylinder">Add Cylinder</button>
     <button id="duplicate">Duplicate</button>
+    <button id="edit-mode">Edit Mode (Tab)</button>
     <button id="delete">Delete</button>
     <button id="undo">Undo</button>
     <button id="redo">Redo</button>
+
     <label>
       <input id="snap" type="checkbox">
       Snap movement (1 unit)
     </label>
   </header>
+
   <section id="ai-panel">
     <label for="ai-instruction">AI Command (Ollama)</label>
 
@@ -41,7 +44,6 @@ document.querySelector('#app').innerHTML = `
       Ready for your instruction.
     </p>
   </section>
-
 
   <main id="editor">
     <aside>
@@ -69,10 +71,18 @@ const properties = document.querySelector('#properties');
 
 const scene = new THREE.Scene();
 
-const camera = new THREE.PerspectiveCamera(75, 1, 0.1, 1000);
+const camera = new THREE.PerspectiveCamera(
+  75,
+  1,
+  0.1,
+  1000
+);
+
 camera.position.set(5, 4, 5);
 
 const renderer = new THREE.WebGLRenderer();
+
+renderer.domElement.tabIndex = 0;
 viewport.appendChild(renderer.domElement);
 
 // Transform Controls
@@ -85,7 +95,10 @@ transformControls.setMode('translate');
 scene.add(transformControls.getHelper());
 
 // Orbit Controls
-const controls = new OrbitControls(camera, renderer.domElement);
+const controls = new OrbitControls(
+  camera,
+  renderer.domElement
+);
 
 controls.enableDamping = true;
 controls.enableZoom = true;
@@ -120,6 +133,231 @@ const undoHistory = [];
 const redoHistory = [];
 
 let dragStartSnapshot = null;
+
+// ===============================
+// MESH EDIT MODE STATE
+// ===============================
+
+let editMode = false;
+
+let previousObjectTransformMode = 'translate';
+
+let vertexMarkers = [];
+let selectedVertexMarker = null;
+
+// Shared marker geometry
+const vertexMarkerGeometry = new THREE.SphereGeometry(
+  0.09,
+  12,
+  8
+);
+
+// Normal vertex color
+const vertexMarkerMaterial = new THREE.MeshBasicMaterial({
+  color: 0xff8800,
+  depthTest: false,
+  depthWrite: false
+});
+
+// Selected vertex color
+const selectedVertexMaterial = new THREE.MeshBasicMaterial({
+  color: 0x00bfff,
+  depthTest: false,
+  depthWrite: false
+});
+
+// ===============================
+// VERTEX SELECTION
+// ===============================
+
+function selectVertexMarker(marker) {
+  if (selectedVertexMarker) {
+    selectedVertexMarker.material = vertexMarkerMaterial;
+  }
+
+  selectedVertexMarker = marker;
+
+  if (marker) {
+    marker.material = selectedVertexMaterial;
+
+    // Show movement arrows on the vertex
+    transformControls.setMode('translate');
+    transformControls.attach(marker);
+  } else {
+    transformControls.detach();
+  }
+}
+
+// ===============================
+// CLEAR VERTEX MARKERS
+// ===============================
+
+function clearVertexMarkers() {
+  selectVertexMarker(null);
+
+  for (const marker of vertexMarkers) {
+    marker.parent?.remove(marker);
+  }
+
+  vertexMarkers = [];
+}
+
+// ===============================
+// DISPLAY CUBE VERTICES
+// ===============================
+
+function showCubeVertices(object) {
+  clearVertexMarkers();
+
+  if (
+    !object ||
+    object.userData.type !== 'Cube'
+  ) {
+    return;
+  }
+
+  const positions = object.geometry.getAttribute('position');
+
+  // A cube has 8 geometric corners,
+  // but BoxGeometry contains 24 vertex entries.
+  const vertexGroups = new Map();
+
+  for (let i = 0; i < positions.count; i++) {
+    const x = positions.getX(i);
+    const y = positions.getY(i);
+    const z = positions.getZ(i);
+
+    const key = [
+      x.toFixed(5),
+      y.toFixed(5),
+      z.toFixed(5)
+    ].join(',');
+
+    if (!vertexGroups.has(key)) {
+      vertexGroups.set(key, {
+        position: new THREE.Vector3(x, y, z),
+        indices: []
+      });
+    }
+
+    // Store every geometry index for this corner
+    vertexGroups.get(key).indices.push(i);
+  }
+
+  // Create one marker per geometric corner
+  for (const group of vertexGroups.values()) {
+    const marker = new THREE.Mesh(
+      vertexMarkerGeometry,
+      vertexMarkerMaterial
+    );
+
+    marker.position.copy(group.position);
+
+    // Store connected geometry vertices
+    marker.userData.vertexIndices = group.indices;
+
+    marker.renderOrder = 10;
+
+    // Attach to cube so transforms are inherited
+    object.add(marker);
+
+    vertexMarkers.push(marker);
+  }
+}
+
+// ===============================
+// UPDATE VERTEX GEOMETRY
+// ===============================
+
+function updateSelectedVertexGeometry() {
+  if (
+    !editMode ||
+    !selectedObject ||
+    !selectedVertexMarker ||
+    selectedVertexMarker.parent !== selectedObject
+  ) {
+    return;
+  }
+
+  const geometry = selectedObject.geometry;
+
+  const positions = geometry.getAttribute('position');
+
+  const indices =
+    selectedVertexMarker.userData.vertexIndices;
+
+  const point = selectedVertexMarker.position;
+
+  // Move all geometry entries representing
+  // the selected geometric corner.
+  for (const index of indices) {
+    positions.setXYZ(
+      index,
+      point.x,
+      point.y,
+      point.z
+    );
+  }
+
+  positions.needsUpdate = true;
+
+  // Recalculate geometry information
+  geometry.computeVertexNormals();
+  geometry.computeBoundingBox();
+  geometry.computeBoundingSphere();
+}
+
+// ===============================
+// EDIT MODE TOGGLE
+// ===============================
+
+function toggleEditMode() {
+  if (transformControls.dragging) {
+    return;
+  }
+
+  if (editMode) {
+    // Return to Object Mode
+    editMode = false;
+
+    clearVertexMarkers();
+
+    transformControls.setMode(
+      previousObjectTransformMode
+    );
+
+    if (selectedObject) {
+      transformControls.attach(selectedObject);
+    }
+
+  } else {
+    // First version supports cubes only
+    if (
+      !selectedObject ||
+      selectedObject.userData.type !== 'Cube'
+    ) {
+      return;
+    }
+
+    previousObjectTransformMode =
+      transformControls.getMode();
+
+    editMode = true;
+
+    transformControls.detach();
+    transformControls.setMode('translate');
+
+    showCubeVertices(selectedObject);
+  }
+
+  updateProperties();
+  updateButtons();
+}
+
+document.querySelector('#edit-mode').addEventListener(
+  'click',
+  toggleEditMode
+);
 
 // ===============================
 // OBJECT CREATION
@@ -164,7 +402,10 @@ function createMesh(type, dimensions = {}) {
   );
 }
 
-// Get object dimensions for Undo/Redo
+// ===============================
+// GET GEOMETRY DIMENSIONS
+// ===============================
+
 function getDimensions(object) {
   const params = object.geometry.parameters;
   const type = object.userData.type;
@@ -189,7 +430,10 @@ function getDimensions(object) {
   };
 }
 
-// Give each object a unique name and ID
+// ===============================
+// OBJECT NAMING
+// ===============================
+
 function giveObjectName(object, type) {
   nameCounts[type] += 1;
 
@@ -206,6 +450,23 @@ function giveObjectName(object, type) {
 // ===============================
 
 function selectObject(object) {
+  // Keep the current vertex selection if the
+  // same cube is selected again in Edit Mode.
+  if (editMode && object === selectedObject) {
+    return;
+  }
+
+  // Exit Edit Mode when changing objects
+  if (editMode && object !== selectedObject) {
+    editMode = false;
+
+    clearVertexMarkers();
+
+    transformControls.setMode(
+      previousObjectTransformMode
+    );
+  }
+
   if (selectedObject) {
     selectedObject.material.color.setHex(originalColor);
   }
@@ -214,7 +475,11 @@ function selectObject(object) {
 
   if (object) {
     object.material.color.setHex(selectedColor);
-    transformControls.attach(object);
+
+    if (!editMode) {
+      transformControls.attach(object);
+    }
+
   } else {
     transformControls.detach();
   }
@@ -281,7 +546,9 @@ for (const property of ['position', 'rotation', 'scale']) {
     const input = document.createElement('input');
 
     input.type = 'number';
-    input.step = property === 'rotation' ? '1' : '0.1';
+
+    input.step =
+      property === 'rotation' ? '1' : '0.1';
 
     input.setAttribute(
       'aria-label',
@@ -300,6 +567,7 @@ for (const property of ['position', 'rotation', 'scale']) {
     input.addEventListener('input', () => {
       if (
         !selectedObject ||
+        editMode ||
         transformControls.dragging ||
         input.value === '' ||
         !input.validity.valid
@@ -309,7 +577,9 @@ for (const property of ['position', 'rotation', 'scale']) {
 
       const value = input.valueAsNumber;
 
-      if (!Number.isFinite(value)) return;
+      if (!Number.isFinite(value)) {
+        return;
+      }
 
       const before = takeSnapshot();
 
@@ -337,7 +607,9 @@ function updateProperties() {
 
   for (const { input, property, axis } of propertyInputs) {
     input.disabled =
-      !selectedObject || transformControls.dragging;
+      !selectedObject ||
+      editMode ||
+      transformControls.dragging;
 
     if (!selectedObject) {
       input.value = '';
@@ -364,8 +636,15 @@ function takeSnapshot() {
       type: object.userData.type,
       name: object.name,
 
-      // Save geometry dimensions
       dimensions: getDimensions(object),
+
+      // Save the actual cube geometry
+      vertexPositions:
+        object.userData.type === 'Cube'
+          ? Array.from(
+              object.geometry.getAttribute('position').array
+            )
+          : null,
 
       position: object.position.toArray(),
       rotation: object.rotation.toArray(),
@@ -401,6 +680,7 @@ function recordAction(before) {
 }
 
 function restoreSnapshot(snapshot) {
+  // Exit Edit Mode and detach vertex controls
   selectObject(null);
 
   for (const object of objects) {
@@ -412,14 +692,28 @@ function restoreSnapshot(snapshot) {
   objects.length = 0;
 
   Object.assign(nameCounts, snapshot.nameCounts);
+
   nextObjectId = snapshot.nextObjectId;
 
   for (const saved of snapshot.objects) {
-    // Restore the original geometry dimensions
     const object = createMesh(
       saved.type,
       saved.dimensions
     );
+
+    // Restore edited cube vertices
+    if (saved.vertexPositions) {
+      const positions =
+        object.geometry.getAttribute('position');
+
+      positions.array.set(saved.vertexPositions);
+
+      positions.needsUpdate = true;
+
+      object.geometry.computeVertexNormals();
+      object.geometry.computeBoundingBox();
+      object.geometry.computeBoundingSphere();
+    }
 
     object.name = saved.name;
 
@@ -473,6 +767,25 @@ function updateButtons() {
 
   document.querySelector('#redo').disabled =
     dragging || redoHistory.length === 0;
+
+  const editButton =
+    document.querySelector('#edit-mode');
+
+  editButton.disabled =
+    dragging ||
+    (
+      !editMode &&
+      selectedObject?.userData.type !== 'Cube'
+    );
+
+  editButton.textContent = editMode
+    ? 'Object Mode (Tab)'
+    : 'Edit Mode (Tab)';
+
+  editButton.setAttribute(
+    'aria-pressed',
+    String(editMode)
+  );
 }
 
 // ===============================
@@ -521,7 +834,9 @@ for (const type of ['Cube', 'Sphere', 'Cylinder']) {
 document.querySelector('#duplicate').addEventListener(
   'click',
   () => {
-    if (!selectedObject) return;
+    if (!selectedObject) {
+      return;
+    }
 
     const before = takeSnapshot();
 
@@ -529,6 +844,17 @@ document.querySelector('#duplicate').addEventListener(
       selectedObject.userData.type,
       getDimensions(selectedObject)
     );
+
+    // Copy the edited geometry
+    duplicate.geometry.dispose();
+
+    duplicate.geometry =
+      selectedObject.geometry.clone();
+
+    // Preserve original primitive dimensions
+    duplicate.geometry.parameters = {
+      ...selectedObject.geometry.parameters
+    };
 
     giveObjectName(
       duplicate,
@@ -560,7 +886,9 @@ document.querySelector('#duplicate').addEventListener(
 // ===============================
 
 function deleteObject(object) {
-  if (!object) return;
+  if (!object) {
+    return;
+  }
 
   const index = objects.indexOf(object);
 
@@ -584,7 +912,6 @@ function deleteObject(object) {
   recordAction(before);
 }
 
-// Toolbar delete button
 document.querySelector('#delete').addEventListener(
   'click',
   () => {
@@ -600,6 +927,12 @@ function executeCommand(command) {
   if (transformControls.dragging) {
     throw new Error(
       'Finish dragging before using AI.'
+    );
+  }
+
+  if (editMode) {
+    throw new Error(
+      'Exit Edit Mode before using AI commands.'
     );
   }
 
@@ -624,7 +957,7 @@ function executeCommand(command) {
     );
   }
 
-  // FIND TARGET OBJECT
+  // FIND TARGET
   let object;
 
   if (command.target === 'selected') {
@@ -685,7 +1018,8 @@ function executeCommand(command) {
 
 function getSceneContext() {
   return {
-    selectedId: selectedObject?.userData.editorId ?? null,
+    selectedId:
+      selectedObject?.userData.editorId ?? null,
 
     objects: objects.map(object => ({
       id: object.userData.editorId,
@@ -719,9 +1053,14 @@ function getSceneContext() {
 // AI INPUT HANDLING
 // ===============================
 
-const aiInput = document.querySelector('#ai-instruction');
-const aiSend = document.querySelector('#ai-send');
-const aiStatus = document.querySelector('#ai-status');
+const aiInput =
+  document.querySelector('#ai-instruction');
+
+const aiSend =
+  document.querySelector('#ai-send');
+
+const aiStatus =
+  document.querySelector('#ai-status');
 
 let aiBusy = false;
 
@@ -729,14 +1068,24 @@ async function sendAIInstruction() {
   const instruction = aiInput.value.trim();
 
   if (!instruction) {
-    aiStatus.textContent = 'Please enter an instruction.';
+    aiStatus.textContent =
+      'Please enter an instruction.';
     return;
   }
 
-  if (aiBusy) return;
+  if (aiBusy) {
+    return;
+  }
+
+  if (editMode) {
+    aiStatus.textContent =
+      'Exit Edit Mode before using AI.';
+    return;
+  }
 
   if (transformControls.dragging) {
-    aiStatus.textContent = 'Finish dragging first.';
+    aiStatus.textContent =
+      'Finish dragging first.';
     return;
   }
 
@@ -746,18 +1095,14 @@ async function sendAIInstruction() {
 
   aiStatus.textContent = 'Waiting for Ollama...';
 
-  // Collect current objects before requesting AI
   const sceneContext = getSceneContext();
 
   try {
-    // Step 1: Send user instruction to Ollama
-    // Step 2: Receive and validate JSON in ai.js
     const command = await requestCommand(
       instruction,
       sceneContext
     );
 
-    // Avoid applying an outdated command if the scene changed
     if (
       JSON.stringify(getSceneContext()) !==
       JSON.stringify(sceneContext)
@@ -767,7 +1112,6 @@ async function sendAIInstruction() {
       );
     }
 
-    // Step 3: Execute the validated command
     const result = executeCommand(command);
 
     aiStatus.textContent =
@@ -790,9 +1134,12 @@ async function sendAIInstruction() {
 }
 
 // Send button
-aiSend.addEventListener('click', sendAIInstruction);
+aiSend.addEventListener(
+  'click',
+  sendAIInstruction
+);
 
-// Press Enter to send, Shift+Enter for a new line
+// Enter sends, Shift+Enter adds a new line
 aiInput.addEventListener('keydown', event => {
   if (
     event.key === 'Enter' &&
@@ -813,7 +1160,9 @@ document.querySelector('#undo').addEventListener(
   () => {
     const action = undoHistory.pop();
 
-    if (!action) return;
+    if (!action) {
+      return;
+    }
 
     redoHistory.push(action);
     restoreSnapshot(action.before);
@@ -825,7 +1174,9 @@ document.querySelector('#redo').addEventListener(
   () => {
     const action = redoHistory.pop();
 
-    if (!action) return;
+    if (!action) {
+      return;
+    }
 
     undoHistory.push(action);
     restoreSnapshot(action.after);
@@ -849,7 +1200,6 @@ document.querySelector('#snap').addEventListener(
 // KEYBOARD SHORTCUTS
 // ===============================
 
-
 window.addEventListener('keydown', event => {
   if (
     event.target instanceof HTMLInputElement ||
@@ -863,19 +1213,37 @@ window.addEventListener('keydown', event => {
     return;
   }
 
+  // Tab toggles Object/Edit Mode
+  if (
+    event.code === 'Tab' &&
+    !event.shiftKey &&
+    document.activeElement === renderer.domElement &&
+    (
+      editMode ||
+      selectedObject?.userData.type === 'Cube'
+    )
+  ) {
+    event.preventDefault();
+    toggleEditMode();
+    return;
+  }
+
+  // Vertex editing uses translation only for now
+  if (editMode) {
+    return;
+  }
+
+  // Object Mode shortcuts
   if (event.code === 'KeyM') {
     transformControls.setMode('translate');
-  }
 
-  else if (event.code === 'KeyR') {
+  } else if (event.code === 'KeyR') {
     transformControls.setMode('rotate');
-  }
 
-  else if (event.code === 'KeyS') {
+  } else if (event.code === 'KeyS') {
     transformControls.setMode('scale');
   }
 });
-
 
 // ===============================
 // TRANSFORM CONTROLS EVENTS
@@ -884,19 +1252,26 @@ window.addEventListener('keydown', event => {
 transformControls.addEventListener(
   'mouseDown',
   () => {
+    // Save the entire mesh before dragging
     dragStartSnapshot = takeSnapshot();
   }
 );
 
 transformControls.addEventListener(
   'objectChange',
-  updateProperties
+  () => {
+    // Update vertices while dragging in Edit Mode
+    updateSelectedVertexGeometry();
+
+    updateProperties();
+  }
 );
 
 transformControls.addEventListener(
   'mouseUp',
   () => {
     if (dragStartSnapshot) {
+      // Record changed vertex positions
       recordAction(dragStartSnapshot);
     }
 
@@ -928,7 +1303,11 @@ let isDragging = false;
 renderer.domElement.addEventListener(
   'pointerdown',
   event => {
-    if (event.button !== 0) return;
+    if (event.button !== 0) {
+      return;
+    }
+
+    renderer.domElement.focus();
 
     if (
       transformControls.dragging ||
@@ -1007,6 +1386,32 @@ renderer.domElement.addEventListener(
 
     raycaster.setFromCamera(mouse, camera);
 
+    // ===============================
+    // VERTEX SELECTION IN EDIT MODE
+    // ===============================
+
+    if (editMode) {
+      const vertexIntersections =
+        raycaster.intersectObjects(
+          vertexMarkers,
+          false
+        );
+
+      if (vertexIntersections.length > 0) {
+        selectVertexMarker(
+          vertexIntersections[0].object
+        );
+      } else {
+        selectVertexMarker(null);
+      }
+
+      return;
+    }
+
+    // ===============================
+    // OBJECT SELECTION
+    // ===============================
+
     const intersections = raycaster.intersectObjects(
       objects,
       false
@@ -1032,7 +1437,6 @@ renderer.domElement.addEventListener(
 // INITIAL TEST CUBE
 // ===============================
 
-// This initial object is not an undoable action.
 const cube = createMesh('Cube');
 
 giveObjectName(cube, 'Cube');
@@ -1056,7 +1460,10 @@ function resizeRenderer() {
   renderer.setSize(width, height);
 }
 
-window.addEventListener('resize', resizeRenderer);
+window.addEventListener(
+  'resize',
+  resizeRenderer
+);
 
 resizeRenderer();
 
