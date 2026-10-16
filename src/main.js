@@ -142,8 +142,18 @@ let editMode = false;
 
 let previousObjectTransformMode = 'translate';
 
+
 let vertexMarkers = [];
-let selectedVertexMarker = null;
+
+// Store multiple selected vertex markers
+const selectedVertexMarkers = new Set();
+
+// Invisible center used to move selected vertices together
+const vertexPivot = new THREE.Object3D();
+
+// Previous pivot position used to calculate movement
+const previousPivotPosition = new THREE.Vector3();
+
 
 // Shared marker geometry
 const vertexMarkerGeometry = new THREE.SphereGeometry(
@@ -170,37 +180,90 @@ const selectedVertexMaterial = new THREE.MeshBasicMaterial({
 // VERTEX SELECTION
 // ===============================
 
-function selectVertexMarker(marker) {
-  if (selectedVertexMarker) {
-    selectedVertexMarker.material = vertexMarkerMaterial;
+
+function updateVertexSelectionGizmo() {
+  // Update marker colors
+  for (const marker of vertexMarkers) {
+    marker.material = selectedVertexMarkers.has(marker)
+      ? selectedVertexMaterial
+      : vertexMarkerMaterial;
   }
 
-  selectedVertexMarker = marker;
+  // Hide movement arrows when nothing is selected
+  if (
+    !editMode ||
+    !selectedObject ||
+    selectedVertexMarkers.size === 0
+  ) {
+    transformControls.detach();
+    vertexPivot.removeFromParent();
+    return;
+  }
+
+  // Calculate center of selected vertices
+  const center = new THREE.Vector3();
+
+  for (const marker of selectedVertexMarkers) {
+    center.add(marker.position);
+  }
+
+  center.divideScalar(selectedVertexMarkers.size);
+
+  // Pivot uses the cube's local coordinate system
+  if (vertexPivot.parent !== selectedObject) {
+    vertexPivot.removeFromParent();
+    selectedObject.add(vertexPivot);
+  }
+
+  vertexPivot.position.copy(center);
+  previousPivotPosition.copy(center);
+
+  // Attach movement gizmo to the center
+  transformControls.setMode('translate');
+  transformControls.attach(vertexPivot);
+}
+
+function selectVertexMarker(marker, multiSelect = false) {
+  if (!editMode) return;
+
+  // Normal click replaces the selection
+  if (!multiSelect) {
+    selectedVertexMarkers.clear();
+  }
 
   if (marker) {
-    marker.material = selectedVertexMaterial;
-
-    // Show movement arrows on the vertex
-    transformControls.setMode('translate');
-    transformControls.attach(marker);
-  } else {
-    transformControls.detach();
+    // Shift+Click on a selected point deselects it
+    if (multiSelect && selectedVertexMarkers.has(marker)) {
+      selectedVertexMarkers.delete(marker);
+    } else {
+      selectedVertexMarkers.add(marker);
+    }
   }
+
+  updateVertexSelectionGizmo();
 }
+
 
 // ===============================
 // CLEAR VERTEX MARKERS
 // ===============================
 
-function clearVertexMarkers() {
-  selectVertexMarker(null);
 
+function clearVertexMarkers() {
+  selectedVertexMarkers.clear();
+
+  // Detach the movement gizmo
+  transformControls.detach();
+  vertexPivot.removeFromParent();
+
+  // Remove all vertex markers
   for (const marker of vertexMarkers) {
     marker.parent?.remove(marker);
   }
 
   vertexMarkers = [];
 }
+
 
 // ===============================
 // DISPLAY CUBE VERTICES
@@ -269,43 +332,57 @@ function showCubeVertices(object) {
 // UPDATE VERTEX GEOMETRY
 // ===============================
 
+
 function updateSelectedVertexGeometry() {
   if (
     !editMode ||
     !selectedObject ||
-    !selectedVertexMarker ||
-    selectedVertexMarker.parent !== selectedObject
+    selectedVertexMarkers.size === 0 ||
+    vertexPivot.parent !== selectedObject
   ) {
     return;
   }
 
-  const geometry = selectedObject.geometry;
+  // Calculate how much the gizmo moved
+  const delta = new THREE.Vector3().subVectors(
+    vertexPivot.position,
+    previousPivotPosition
+  );
 
-  const positions = geometry.getAttribute('position');
-
-  const indices =
-    selectedVertexMarker.userData.vertexIndices;
-
-  const point = selectedVertexMarker.position;
-
-  // Move all geometry entries representing
-  // the selected geometric corner.
-  for (const index of indices) {
-    positions.setXYZ(
-      index,
-      point.x,
-      point.y,
-      point.z
-    );
+  if (delta.lengthSq() < 1e-16) {
+    return;
   }
 
+  const geometry = selectedObject.geometry;
+  const positions = geometry.getAttribute('position');
+
+  // Move every selected vertex by the same amount
+  for (const marker of selectedVertexMarkers) {
+    marker.position.add(delta);
+
+    const indices = marker.userData.vertexIndices;
+
+    for (const index of indices) {
+      positions.setXYZ(
+        index,
+        marker.position.x,
+        marker.position.y,
+        marker.position.z
+      );
+    }
+  }
+
+  // Remember the new gizmo position
+  previousPivotPosition.copy(vertexPivot.position);
+
+  // Refresh the mesh geometry
   positions.needsUpdate = true;
 
-  // Recalculate geometry information
   geometry.computeVertexNormals();
   geometry.computeBoundingBox();
   geometry.computeBoundingSphere();
 }
+
 
 // ===============================
 // EDIT MODE TOGGLE
@@ -1390,23 +1467,29 @@ renderer.domElement.addEventListener(
     // VERTEX SELECTION IN EDIT MODE
     // ===============================
 
-    if (editMode) {
-      const vertexIntersections =
-        raycaster.intersectObjects(
-          vertexMarkers,
-          false
-        );
+    
+if (editMode) {
+  const vertexIntersections = raycaster.intersectObjects(
+    vertexMarkers,
+    false
+  );
 
-      if (vertexIntersections.length > 0) {
-        selectVertexMarker(
-          vertexIntersections[0].object
-        );
-      } else {
-        selectVertexMarker(null);
-      }
+  if (vertexIntersections.length > 0) {
+    const clickedMarker = vertexIntersections[0].object;
 
-      return;
-    }
+    selectVertexMarker(
+      clickedMarker,
+      event.shiftKey
+    );
+
+  } else if (!event.shiftKey) {
+    // Clicking empty space without Shift clears selection
+    selectVertexMarker(null);
+  }
+
+  return;
+}
+
 
     // ===============================
     // OBJECT SELECTION
