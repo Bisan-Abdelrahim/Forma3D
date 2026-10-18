@@ -1,11 +1,21 @@
 
-const axes = ['x', 'y', 'z'];
+const actions = [
+  'create',
+  'move',
+  'rotate',
+  'scale',
+  'delete',
+  'skew',
+  'taper',
+  'bend'
+];
 
-// ===============================
-// JSON VALIDATION HELPERS
-// ===============================
+const shapes = ['cube', 'sphere', 'cylinder'];
 
-function checkKeys(value, required, optional = []) {
+const own = (object, key) => Object.hasOwn(object, key);
+
+// Validate that the value is a JSON object
+function record(value) {
   if (
     !value ||
     typeof value !== 'object' ||
@@ -13,174 +23,196 @@ function checkKeys(value, required, optional = []) {
   ) {
     throw new Error('Expected one JSON object.');
   }
+}
+
+// Validate required and allowed fields
+function keys(value, required, optional = []) {
+  record(value);
 
   const allowed = [...required, ...optional];
 
   if (
-    required.some(key => !Object.hasOwn(value, key)) ||
+    required.some(key => !own(value, key)) ||
     Object.keys(value).some(key => !allowed.includes(key))
   ) {
-    throw new Error('Missing or unexpected command fields.');
+    throw new Error(
+      'Missing or unexpected command fields.'
+    );
   }
 }
 
-function checkVector(value, positive = false) {
-  checkKeys(value, [], axes);
+// Validate 3D vectors
+function vector(value, positive = false) {
+  keys(value, ['x', 'y', 'z']);
 
-  if (Object.keys(value).length === 0) {
-    throw new Error('At least one axis is required.');
-  }
-
-  for (const number of Object.values(value)) {
-    if (
-      typeof number !== 'number' ||
-      !Number.isFinite(number) ||
-      Math.abs(number) > 10000 ||
-      (positive && number < 0.001)
-    ) {
-      throw new Error('Invalid coordinates or scale.');
-    }
+  if (
+    Object.values(value).some(
+      n =>
+        typeof n !== 'number' ||
+        !Number.isFinite(n) ||
+        Math.abs(n) > 10000 ||
+        (positive && n < 0.001)
+    )
+  ) {
+    throw new Error(
+      'Invalid coordinates: use finite numbers within ±10000; sizes/scales must be at least 0.001.'
+    );
   }
 }
 
-// ===============================
-// VALIDATE AI COMMAND
-// ===============================
-
+// Validate AI commands
 export function validateCommand(command) {
-  checkKeys(command, ['action'], [
-    'shape',
-    'dimensions',
-    'position',
-    'target',
-    'rotation',
-    'scale'
-  ]);
+  record(command);
+
+  if (!actions.includes(command.action)) {
+    throw new Error('Unsupported action.');
+  }
 
   // CREATE
   if (command.action === 'create') {
-    checkKeys(command, ['action', 'shape'], [
-      'dimensions',
-      'position'
-    ]);
+    keys(
+      command,
+      ['action', 'shape'],
+      ['dimensions', 'position']
+    );
 
-    const dimensionFields = {
-      cube: ['width', 'height', 'depth'],
-      sphere: ['radius'],
-      cylinder: ['radius', 'height']
-    };
-
-    if (!Object.hasOwn(dimensionFields, command.shape)) {
+    if (!shapes.includes(command.shape)) {
       throw new Error('Unsupported shape.');
     }
 
-    if (command.position !== undefined) {
-      checkVector(command.position);
+    if (own(command, 'position')) {
+      vector(command.position);
     }
 
-    if (command.dimensions !== undefined) {
-      checkKeys(
-        command.dimensions,
-        [],
-        dimensionFields[command.shape]
-      );
+    if (own(command, 'dimensions')) {
+      const fields =
+        command.shape === 'cube'
+          ? ['width', 'height', 'depth']
+          : command.shape === 'sphere'
+            ? ['radius']
+            : ['radius', 'height'];
 
-      for (const number of Object.values(command.dimensions)) {
+      keys(command.dimensions, fields);
+
+      for (const n of Object.values(command.dimensions)) {
         if (
-          typeof number !== 'number' ||
-          !Number.isFinite(number) ||
-          number < 0.001 ||
-          number > 10000
+          typeof n !== 'number' ||
+          !Number.isFinite(n) ||
+          n < 0.001 ||
+          n > 10000
         ) {
           throw new Error('Invalid dimensions.');
         }
       }
     }
 
-  } else {
+    return command;
+  }
 
-    // MOVE / ROTATE / SCALE / DELETE
-    const fields = {
-      move: 'position',
-      rotate: 'rotation',
-      scale: 'scale',
-      delete: null
-    };
-
-    if (!Object.hasOwn(fields, command.action)) {
-      throw new Error('Unsupported action.');
+  // SKEW
+  if (command.action === 'bend') {
+    keys(command, ['action','target','axis','direction','angle']);
+    if (!['x','y','z'].includes(command.axis) || !['x','y','z'].includes(command.direction) || command.axis === command.direction ||
+        typeof command.angle !== 'number' || !Number.isFinite(command.angle) || Math.abs(command.angle) > 180) throw new Error('Invalid bend options');
+  } else if (command.action === 'taper') {
+    keys(command, ['action', 'target', 'axis', 'end', 'amount']);
+    if (!['x', 'y', 'z'].includes(command.axis) || !['positive', 'negative'].includes(command.end) ||
+        typeof command.amount !== 'number' || !Number.isFinite(command.amount) || command.amount < -0.95 || command.amount > 3) {
+      throw new Error('Invalid taper: choose axis x/y/z, end positive/negative, amount -0.95..3.');
     }
-
-    const field = fields[command.action];
-
-    checkKeys(command, [
+  } else if (command.action === 'skew') {
+    keys(command, [
       'action',
       'target',
-      ...(field ? [field] : [])
+      'axis',
+      'relativeTo',
+      'amount'
     ]);
 
+    const validAxes = ['x', 'y', 'z'];
+
     if (
-      command.target !== 'selected' &&
-      !(
-        Number.isSafeInteger(command.target) &&
-        command.target > 0
-      )
+      !validAxes.includes(command.axis) ||
+      !validAxes.includes(command.relativeTo) ||
+      command.axis === command.relativeTo
     ) {
-      throw new Error('Invalid target.');
+      throw new Error('Invalid skew axes.');
     }
 
+    if (
+      typeof command.amount !== 'number' ||
+      !Number.isFinite(command.amount) ||
+      Math.abs(command.amount) > 10
+    ) {
+      throw new Error(
+        'Skew amount must be between -10 and 10.'
+      );
+    }
+
+  } else {
+    // MOVE / ROTATE / SCALE / DELETE
+    const field = {
+      move: 'position',
+      rotate: 'rotation',
+      scale: 'scale'
+    }[command.action];
+
+    keys(
+      command,
+      [
+        'action',
+        'target',
+        ...(field ? [field] : [])
+      ]
+    );
+
     if (field) {
-      checkVector(
+      vector(
         command[field],
         field === 'scale'
       );
     }
   }
 
+  // Validate target object
+  if (
+    command.target !== 'selected' &&
+    !(
+      Number.isSafeInteger(command.target) &&
+      command.target > 0
+    )
+  ) {
+    throw new Error(
+      'Target must be selected or an object ID.'
+    );
+  }
+
   return command;
 }
 
-// ===============================
-// AI SYSTEM PROMPT
-// ===============================
+// AI SYSTEM INSTRUCTIONS
+const instructions = `
+You translate design instructions into exactly ONE JSON command.
+Never return code, markdown, or arrays.
 
-const systemPrompt = `
-You are the command interpreter for Forma3D,
-a beginner-friendly 3D editor.
-
-Your only task is to convert the user's
-natural-language design instruction into
-exactly ONE valid JSON command.
-
-Return JSON only.
-Never return JavaScript.
-Never return Markdown.
-Never return explanations.
-Never return an array.
-Never include extra fields.
-
-SUPPORTED ACTIONS:
-create, move, rotate, scale, delete.
-
-SUPPORTED SHAPES:
-cube, sphere, cylinder.
-
-VALID COMMAND EXAMPLES:
+Allowed commands (no extra keys):
 
 CREATE CUBE:
-{"action":"create","shape":"cube","dimensions":{"width":4,"height":2,"depth":3}}
+{"action":"create","shape":"cube","dimensions":{"width":4,"height":2,"depth":3},"position":{"x":0,"y":0,"z":0}}
 
 CREATE SPHERE:
-{"action":"create","shape":"sphere","dimensions":{"radius":2}}
+{"action":"create","shape":"sphere","dimensions":{"radius":1}}
 
 CREATE CYLINDER:
-{"action":"create","shape":"cylinder","dimensions":{"radius":1,"height":3}}
+{"action":"create","shape":"cylinder","dimensions":{"radius":1,"height":2}}
+
+Dimensions and position are optional for create.
 
 MOVE:
-{"action":"move","target":"selected","position":{"x":3}}
+{"action":"move","target":"selected","position":{"x":2,"y":0,"z":0}}
 
 ROTATE:
-{"action":"rotate","target":"selected","rotation":{"y":90}}
+{"action":"rotate","target":"selected","rotation":{"x":0,"y":90,"z":0}}
 
 SCALE:
 {"action":"scale","target":"selected","scale":{"x":2,"y":2,"z":2}}
@@ -188,77 +220,47 @@ SCALE:
 DELETE:
 {"action":"delete","target":"selected"}
 
-IMPORTANT RULES:
+BEND:
+{"action":"bend","target":"selected","axis":"y","direction":"x","angle":90}
+Bend along local axis toward a different local direction axis; angle is degrees -180..180.
+Minimum-axis end stays fixed; cubes only. Subdivision is automatic.
 
-1. Return exactly one JSON object.
+TAPER:
+{"action":"taper","target":"selected","axis":"y","end":"positive","amount":-0.5}
+Taper scales both perpendicular dimensions linearly toward the selected local axis end.
+The opposite end is fixed. Amount -0.5 halves the selected end; +1 doubles it.
+Axis x/y/z; end positive/negative; amount -0.95..3. Cubes only.
 
-2. Only use supported actions and shapes.
+SKEW:
+{"action":"skew","target":"selected","axis":"x","relativeTo":"y","amount":0.5}
 
-3. Create dimensions and position are optional.
+Skew modifies vertex positions using:
+coordinate[axis] += amount * coordinate[relativeTo].
 
-4. Missing dimensions use editor defaults.
+Valid axes are x, y, z.
+The two axes must be different.
+Skew amount must be between -10 and 10.
+Skew is currently supported only for cubes.
 
-5. Transform vectors may contain x, y, or z.
+RULES:
+- All vectors require x, y, z.
+- Rotation uses degrees.
+- Move, rotate, and scale are absolute transformations.
+- Scale is a factor relative to the base geometry.
+- Target is "selected" or a numeric editor object ID.
+- Resolve relative requests using scene context.
+- Sizes and scales must be between 0.001 and 10000.
+- Other coordinate values must be between -10000 and 10000.
+- Generate exactly one supported action.
+- Do not include extra JSON fields.
 
-6. Missing axes keep their existing values.
-
-7. Movement uses absolute coordinates.
-
-8. Rotation uses degrees and absolute angles.
-
-9. Scale uses absolute scale factors.
-
-10. Target must be "selected" or an existing
-numeric object ID from the scene context.
-
-11. Use scene context to identify existing objects.
-
-12. Resolve relative instructions using scene context.
-
-13. Do not invent object IDs.
-
-14. Do not invent unsupported operations.
-
-15. All numbers must be finite and within valid limits.
-
-IMPORTANT OUTPUT RULES:
-
-- Scene context is provided for reference only.
-- Scene context is NOT part of the output.
-- NEVER copy scene context into the response.
-- NEVER include "scene" in the JSON output.
-- NEVER include "selectedId" in the JSON output.
-- NEVER include object lists in the JSON output.
-- Return ONLY fields allowed for the chosen action.
-- Do not add extra properties.
-
-For DELETE, return exactly:
-{"action":"delete","target":"selected"}
-
-If the user explicitly refers to an existing object
-using its name or ID, resolve its numeric ID from
-scene context and use that ID as target.
-
-For example:
-{"action":"delete","target":2}
-
-Do not add any other fields to DELETE commands.
-
-For unsupported, ambiguous, or multiple actions,
-return exactly:
-
+If the request is unsupported, ambiguous, or asks for multiple actions,
+return:
 {"error":"Please request one supported action."}
 `;
 
-// ===============================
-// OLLAMA API REQUEST
-// ===============================
-
-export async function requestCommand(instruction, sceneContext) {
-
-  // Send context separately from the user instruction.
-  // Context is for reference, not for copying into JSON.
-
+// Send natural-language instructions to Ollama
+export async function requestCommand(message, context) {
   const response = await fetch(
     'http://localhost:11434/api/chat',
     {
@@ -271,7 +273,9 @@ export async function requestCommand(instruction, sceneContext) {
       signal: AbortSignal.timeout(120000),
 
       body: JSON.stringify({
-        model: 'llama3.2',
+        model:
+          import.meta.env?.VITE_OLLAMA_MODEL ||
+          'llama3.2',
 
         stream: false,
 
@@ -284,75 +288,36 @@ export async function requestCommand(instruction, sceneContext) {
         messages: [
           {
             role: 'system',
-            content:
-              systemPrompt +
-              '\n\nScene context (reference only):\n' +
-              JSON.stringify(sceneContext)
+            content: instructions
           },
-
           {
             role: 'user',
-            content: instruction
+            content: JSON.stringify({
+              instruction: message,
+              scene: context
+            })
           }
         ]
       })
     }
   );
 
-  // ===============================
-  // CHECK API RESPONSE
-  // ===============================
-
   if (!response.ok) {
     throw new Error(
-      `Ollama error: HTTP ${response.status}`
+      `Local AI returned HTTP ${response.status}. Check Ollama and the installed model.`
     );
   }
 
   const data = await response.json();
 
-  const content = data.message?.content;
-
-  // Debugging: inspect the exact AI response
-  console.log('Ollama raw response:', content);
-
   if (
-    typeof content !== 'string' ||
-    content.length > 10000
+    typeof data.message?.content !== 'string' ||
+    data.message.content.length > 10000
   ) {
     throw new Error('Invalid AI response.');
   }
 
-  // ===============================
-  // PARSE JSON
-  // ===============================
-
-  let command;
-
-  try {
-    command = JSON.parse(content);
-  } catch {
-    throw new Error('AI returned invalid JSON.');
-  }
-
-  // ===============================
-  // HANDLE UNSUPPORTED REQUESTS
-  // ===============================
-
-  if (
-    command &&
-    typeof command === 'object' &&
-    !Array.isArray(command) &&
-    typeof command.error === 'string'
-  ) {
-    throw new Error(
-      'AI could not interpret this instruction.'
-    );
-  }
-
-  // ===============================
-  // VALIDATE BEFORE EXECUTION
-  // ===============================
+  const command = JSON.parse(data.message.content);
 
   return validateCommand(command);
 }
