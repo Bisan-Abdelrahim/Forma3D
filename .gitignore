@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Local pre-refactor snapshots and one-off migration scripts
+.refactor-reference/
