@@ -29,17 +29,20 @@ export class HistoryService {
         type: object.userData.type,
         name: object.name,
 
-        dimensions: this.editor.objects.getDimensions(object),
+        dimensions: object.isMesh ? this.editor.objects.getDimensions(object) : {},
+        parentId: object.parent?.userData.editorId ?? null,
+        visible: object.visible,
+        locked: !!object.userData.locked,
 
-        // Preserve cube deformation.
+        // Preserve mesh deformation, including shear baked while ungrouping.
         vertexPositions:
-          object.userData.type === 'Cube'
+          object.isMesh
             ? Array.from(
                 object.geometry.getAttribute('position').array
               )
             : null,
 
-        topology: object.userData.type === 'Cube' ? {
+        topology: object.isMesh ? {
           index: Array.from(object.geometry.index.array),
           uv: object.geometry.attributes.uv ? Array.from(object.geometry.attributes.uv.array) : null
         } : null,
@@ -48,6 +51,7 @@ export class HistoryService {
         scale: object.scale.toArray()
       })),
 
+      selectedIds: this.editor.state.selectedObjects.map(o => o.userData.editorId),
       selectedId:
         this.editor.state.selectedObject?.userData.editorId ?? null,
 
@@ -77,9 +81,9 @@ export class HistoryService {
     this.editor.selection.selectObject(null);
 
     for (const object of this.editor.state.objects) {
-      this.editor.viewport.scene.remove(object);
-      object.geometry.dispose();
-      object.material.dispose();
+      object.removeFromParent();
+      object.geometry?.dispose();
+      object.material?.dispose();
     }
 
     this.editor.state.objects.length = 0;
@@ -88,10 +92,7 @@ export class HistoryService {
     this.editor.state.nextObjectId = snapshot.nextObjectId;
 
     for (const saved of snapshot.objects) {
-      const object = this.editor.objects.createMesh(
-        saved.type,
-        saved.dimensions
-      );
+      const object = saved.type === 'Group' ? new THREE.Group() : this.editor.objects.createMesh(saved.type, saved.dimensions);
 
       if (saved.vertexPositions) {
         object.geometry.setAttribute('position', new THREE.Float32BufferAttribute(saved.vertexPositions, 3));
@@ -113,9 +114,11 @@ export class HistoryService {
 
       object.userData = {
         type: saved.type,
-        editorId: saved.id
+        editorId: saved.id,
+        locked: saved.locked ?? false
       };
 
+      object.visible = saved.visible ?? true;
       object.position.fromArray(saved.position);
       object.rotation.fromArray(saved.rotation);
       object.scale.fromArray(saved.scale);
@@ -124,13 +127,17 @@ export class HistoryService {
       this.editor.viewport.scene.add(object);
     }
 
+    for (const saved of snapshot.objects) {
+      if (saved.parentId) {
+        const object = this.editor.state.objects.find(o => o.userData.editorId === saved.id);
+        const parent = this.editor.state.objects.find(o => o.userData.editorId === saved.parentId);
+        parent.add(object);
+      }
+    }
+    this.editor.views?.applyMaterials();
     this.editor.viewport.scene.updateMatrixWorld(true);
 
-    const previousSelection = this.editor.state.objects.find(
-      object =>
-        object.userData.editorId === snapshot.selectedId
-    );
-
-    this.editor.selection.selectObject(previousSelection ?? null);
+    const ids = snapshot.selectedIds ?? [snapshot.selectedId];
+    this.editor.selection.setSelection(ids.map(id => this.editor.state.objects.find(o => o.userData.editorId === id)).filter(Boolean));
   };
 }

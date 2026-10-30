@@ -1,9 +1,11 @@
 import * as THREE from 'three';
+import { editorLayout, icon } from './EditorLayout.js';
 
 export class EditorUI {
   constructor(editor) { this.editor = editor; }
 
   bindToolbar() {
+    this.bindSurface();
     document.getElementById('bevel-tool').addEventListener('click',this.editor.bevelTool.toggle);
     document.getElementById('inset-tool').addEventListener('click', this.editor.insetTool.toggle);
     document.getElementById('bend-tool').addEventListener('click', this.editor.bendTool.toggle);
@@ -66,23 +68,72 @@ export class EditorUI {
     );
   }
 
+  // Native details/summary menus work with mouse, Enter and Space.
+  // Keep only one open; Escape returns focus to its trigger.
+  bindSurface() {
+    this.menus = ['add-menu', 'object-menu', 'view-menu', 'snap-menu'].map(id => document.getElementById(id));
+    for (const menu of this.menus) {
+      menu.addEventListener('toggle', () => {
+        if (menu.open) this.closeMenus(menu);
+      });
+      menu.addEventListener('click', event => {
+        const button = event.target.closest('button');
+        if (button && !button.disabled) {
+          menu.open = false;
+          document.querySelector(`#${menu.id} > summary`).focus();
+        }
+      });
+      menu.addEventListener('keydown', event => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          event.stopPropagation();
+          menu.open = false;
+          document.querySelector(`#${menu.id} > summary`).focus();
+        } else if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && event.target?.tagName !== 'SELECT') {
+          event.preventDefault();
+          menu.open = true;
+          const items = [...menu.querySelectorAll('button:not(:disabled), select:not(:disabled)')];
+          if (!items.length) return;
+          const index = items.indexOf(document.activeElement);
+          const next = index < 0 ? (event.key === 'ArrowDown' ? 0 : items.length - 1)
+            : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+          items[next].focus();
+        }
+      });
+      menu.addEventListener('focusout', event => {
+        if (event.relatedTarget && !menu.contains(event.relatedTarget)) menu.open = false;
+      });
+    }
+    window.addEventListener('pointerdown', event => {
+      if (!event.target.closest('.dropdown')) this.closeMenus();
+    });
+    document.querySelector('#object-search').addEventListener('input', this.updateOutliner);
+    for (const [id, mode] of [['move-mode','translate'], ['rotate-mode','rotate'], ['scale-mode','scale']]) {
+      document.getElementById(id).addEventListener('click', () => this.editor.input.setTransformMode(mode));
+    }
+  }
+
+  closeMenus(except = null) {
+    for (const menu of this.menus ?? []) if (menu !== except) menu.open = false;
+  }
+
   bindProperties() {
     this.propertyInputs = [];
     for (const property of ['position', 'rotation', 'scale']) {
       const fieldset = document.createElement('fieldset');
       const legend = document.createElement('legend');
 
-      legend.textContent =
-        property === 'rotation'
-          ? 'Rotation (degrees)'
-          : property;
+      legend.textContent = property === 'rotation' ? 'Rotation °' : property;
 
       fieldset.appendChild(legend);
 
       for (const axis of ['x', 'y', 'z']) {
         const label = document.createElement('label');
 
-        label.textContent = axis.toUpperCase();
+        label.className = `axis-field axis-${axis}`;
+        const axisLabel = document.createElement('span');
+        axisLabel.textContent = axis.toUpperCase();
+        label.appendChild(axisLabel);
 
         const input = document.createElement('input');
 
@@ -108,6 +159,8 @@ export class EditorUI {
         input.addEventListener('input', () => {
           if (
             !this.editor.state.selectedObject ||
+            this.editor.state.selectedObjects.length !== 1 ||
+            !this.editor.workflow.transformable(this.editor.state.selectedObject) ||
             this.editor.mesh.editMode ||
             (this.editor.viewport.transformControls.dragging || !!this.editor.modifiers?.transaction) ||
             input.value === '' ||
@@ -142,65 +195,7 @@ export class EditorUI {
   }
 
   mount() {
-    document.querySelector('#app').innerHTML = `
-      <header id="toolbar">
-        <strong>Forma3D</strong>
-        <div class="toolbar-group" role="group" aria-label="Add objects"><button id="add-cube">Add Cube</button><button id="add-sphere">Add Sphere</button><button id="add-cylinder">Add Cylinder</button></div>
-        <div class="toolbar-group" role="group" aria-label="Object actions"><button id="edit-mode">Edit Mode (Tab)</button><button id="duplicate">Duplicate</button><button id="delete">Delete</button></div>
-        <div class="toolbar-group" role="group" aria-label="History"><button id="undo">Undo</button><button id="redo">Redo</button></div>
-      </header>
-      <nav id="tool-shelf" aria-label="Modeling tools">
-        <div id="object-tools" class="toolbar-group"><span class="group-label">Shape</span><button id="skew-tool" title="Drag the handle left/right. Esc cancels." aria-pressed="false">Skew</button><button id="taper-tool" aria-pressed="false">Taper</button><button id="bend-tool" aria-pressed="false">Bend</button><button id="bevel-tool" title="Chamfer all edges of an unsubdivided cube">Bevel</button></div>
-        <div id="mesh-tools" class="toolbar-group" hidden><span class="group-label">Select</span><button id="vertex-mode">Vertex (1)</button><button id="edge-mode">Edge (2)</button><button id="face-mode">Face (3)</button><span class="group-label">Face tools</span><button id="inset-tool" title="Select a face in Edit Mode, then drag right">Inset</button><button id="extrude-tool" title="Edit Mode → Face → select a face, then drag the handle">Extrude</button></div>
-        <div id="tool-options"><span id="skew-axes" hidden>
-          <label title="Local axis to move">Tilt <select id="skew-axis" aria-label="Skew displacement axis"><option value="x">X</option><option value="y">Y</option><option value="z">Z</option></select></label>
-          <label title="Local axis the tilt varies along">along <select id="skew-relativeTo" aria-label="Skew reference axis"><option value="x">X</option><option value="y" selected>Y</option><option value="z">Z</option></select></label>
-        </span><span id="taper-options" hidden>
-          <label>Axis <select id="taper-axis" aria-label="Taper axis"><option value="x">X</option><option value="y" selected>Y</option><option value="z">Z</option></select></label>
-          <label>End <select id="taper-end" aria-label="Taper end"><option value="positive">+ end</option><option value="negative">− end</option></select></label>
-        </span><span id="bend-options" hidden>
-          <label>Along <select id="bend-axis" aria-label="Bend length axis"><option value="x">X</option><option value="y" selected>Y</option><option value="z">Z</option></select></label>
-          <label>Toward <select id="bend-direction" aria-label="Bend direction"><option value="x">X</option><option value="y">Y</option><option value="z">Z</option></select></label>
-        </span></div>
-        <label class="snap-label"><input id="snap" type="checkbox"> Snap (1 unit)</label>
-      </nav>
-      <p id="tool-status" role="status" aria-live="polite"></p>
-      <details id="ai-drawer"><summary>AI assistant <span>Optional · Ollama</span></summary>
-      <section id="ai-panel">
-        <label for="ai-instruction">AI Command (Ollama)</label>
-
-        <div class="ai-input-row">
-          <textarea
-            id="ai-instruction"
-            rows="2"
-            maxlength="2000"
-            placeholder="Create a cube with width 4, height 2 and depth 3"
-          ></textarea>
-
-          <button id="ai-send">Send</button>
-        </div>
-
-        <p id="ai-status" role="status" aria-live="polite">
-          Ready for your instruction.
-        </p>
-      </section>
-
-      </details>
-      <main id="editor">
-        <aside>
-          <h2>Objects</h2>
-          <div id="outliner"></div>
-        </aside>
-
-        <div id="viewport"></div>
-
-        <aside>
-          <h2>Properties</h2>
-          <p id="selection-name">No selection</p>
-          <div id="properties"></div>
-        </aside>
-      </main>
-    `;
+    document.querySelector('#app').innerHTML = editorLayout();
 
     this.viewport = document.querySelector('#viewport');
     this.outliner = document.querySelector('#outliner');
@@ -209,45 +204,77 @@ export class EditorUI {
 
   updateOutliner = () => {
     this.outliner.replaceChildren();
+    this.objectRows = [];
 
-    for (const object of this.editor.state.objects) {
+    const e = this.editor;
+    const search = document.querySelector('#object-search').value.trim().toLowerCase();
+    const matches = object => object.name.toLowerCase().includes(search);
+    const addRow = (object, child = false, parentMatches = false) => {
+      const row = document.createElement('div');
+      if (search && !parentMatches && !matches(object) && !(object.isGroup && object.children.some(matches))) return;
+      row.className = `object-row${child ? ' child-row' : ''}`;
       const button = document.createElement('button');
-
-      button.textContent = object.name;
-
-      button.classList.toggle(
-        'selected',
-        object === this.editor.state.selectedObject
-      );
-
-      button.setAttribute(
-        'aria-pressed',
-        String(object === this.editor.state.selectedObject)
-      );
-
-      button.disabled = (this.editor.viewport.transformControls.dragging || !!this.editor.modifiers?.transaction);
-
-      button.addEventListener('click', () => {
-        this.editor.selection.selectObject(object);
+      button.innerHTML = icon(object.isGroup ? 'group' : object.userData.type.toLowerCase());
+      const name = document.createElement('span');
+      name.textContent = object.name;
+      button.appendChild(name);
+      button.title = object.name;
+      button.className = 'object-name';
+      button.classList.toggle('selected', e.state.selectedObjects.includes(object));
+      row.classList.toggle('inherited-selection', e.state.selectedObjects.includes(object.parent));
+      row.classList.toggle('unavailable', !e.workflow.editable(object));
+      button.setAttribute('aria-pressed', String(e.state.selectedObjects.includes(object)));
+      button.disabled = e.workflow.busy() || !e.workflow.editable(object);
+      button.addEventListener('click', event => e.selection.selectObject(object, !!(event?.ctrlKey || event?.metaKey || event?.shiftKey)));
+      row.appendChild(button);
+      const controls = [];
+      this.objectRows.push({ object, button, controls });
+      for (const property of ['visible', 'locked']) {
+        const control = document.createElement('button');
+        const action = property === 'visible' ? (object.visible ? 'Hide' : 'Show') : (object.userData.locked ? 'Unlock' : 'Lock');
+        control.innerHTML = icon(property === 'visible' ? (object.visible ? 'eye' : 'hidden') : (object.userData.locked ? 'lock' : 'unlock'));
+        control.className = 'row-control';
+        control.title = `${action} ${object.name}`;
+        control.setAttribute('aria-label', `${action} ${object.name}`);
+        control.setAttribute('aria-pressed', String(property === 'visible' ? !object.visible : !!object.userData.locked));
+        control.disabled = e.workflow.busy();
+        control.addEventListener('click', () => e.workflow.toggle(object, property));
+        row.appendChild(control);
+        controls.push(control);
+      }
+      this.outliner.appendChild(row);
+      if (object.isGroup) object.children.forEach(child => {
+        if (!search || matches(object) || matches(child)) addRow(child, true, matches(object));
       });
-
-      this.outliner.appendChild(button);
-    }
+    };
+    e.workflow.roots().forEach(object => addRow(object));
+    document.querySelector('#object-count').textContent = String(e.state.objects.length);
+    document.querySelector('#outliner-empty').hidden = this.outliner.children.length > 0;
+    const count = e.state.selectedObjects.length;
+    document.querySelector('#selection-count').textContent = count ? `${count} object${count === 1 ? '' : 's'} selected` : 'No objects selected';
   };
 
   updateProperties = () => {
     document.querySelector('#selection-name').textContent =
       this.editor.state.selectedObject
-        ? this.editor.state.selectedObject.name
+        ? (this.editor.state.selectedObjects.length > 1 ? `${this.editor.state.selectedObjects.length} objects selected` : this.editor.state.selectedObject.name)
         : 'No selection';
+
+    const count = this.editor.state.selectedObjects.length;
+    document.querySelector('#property-hint').textContent = count > 1
+      ? 'Use the gizmo to transform together, or Object → Group Selection.'
+      : this.editor.mesh.editMode ? 'Editing mesh components. Use the selection tools.'
+      : count ? 'Edit values below or use the gizmo in the viewport.' : 'Select an object in the scene or Objects list.';
 
     for (const { input, property, axis } of this.propertyInputs) {
       input.disabled =
         !this.editor.state.selectedObject ||
+        this.editor.state.selectedObjects.length !== 1 ||
+        !this.editor.workflow.transformable(this.editor.state.selectedObject) ||
         this.editor.mesh.editMode ||
         (this.editor.viewport.transformControls.dragging || !!this.editor.modifiers?.transaction);
 
-      if (!this.editor.state.selectedObject) {
+      if (!this.editor.state.selectedObject || count > 1) {
         input.value = '';
         continue;
       }
@@ -266,19 +293,26 @@ export class EditorUI {
 
   updateButtons = () => {
     const dragging = (this.editor.viewport.transformControls.dragging || !!this.editor.modifiers?.transaction);
+    for (const row of this.objectRows ?? []) {
+      row.button.disabled = this.editor.workflow.busy() || !this.editor.workflow.editable(row.object);
+      for (const control of row.controls) control.disabled = this.editor.workflow.busy();
+    }
     document.getElementById('object-tools').hidden = this.editor.mesh.editMode;
     document.getElementById('mesh-tools').hidden = !this.editor.mesh.editMode;
+    document.getElementById('face-tools').hidden = !this.editor.mesh.editMode;
     const tools = [this.editor.skewTool,this.editor.taperTool,this.editor.bendTool,this.editor.bevelTool,this.editor.insetTool,this.editor.extrudeTool];
     const active = tools.find(tool => tool?.active);
+    document.getElementById('active-shape-tool').textContent = active ? active.name : 'Choose a tool';
+    if (active) document.getElementById('shape-tools-panel').open = true;
     const hint = document.getElementById('tool-status');
     hint.textContent = active ? `${active.name.toUpperCase()} · Drag the yellow handle · Esc cancels · Click the tool again to exit`
       : this.editor.mesh.editMode ? 'Select a vertex, edge or face. In Face mode, select a face to use Inset or Extrude.'
-      : 'Select an object, then choose a shape tool. M: move · R: rotate · S: scale';
+      : 'Ctrl + click: multi-select · M: move · R: rotate · S: scale';
     const bevel = document.getElementById('bevel-tool');
-    bevel.disabled = dragging || this.editor.mesh.editMode || this.editor.state.selectedObject?.userData.type !== 'Cube';
+    bevel.disabled = dragging || this.editor.mesh.editMode || (this.editor.state.selectedObjects.length !== 1 || !this.editor.workflow.transformable(this.editor.state.selectedObject) || this.editor.state.selectedObject?.userData.type !== 'Cube');
     bevel.setAttribute('aria-pressed',String(this.editor.bevelTool?.active ?? false));
     const bend = document.getElementById('bend-tool');
-    bend.disabled = dragging || this.editor.mesh.editMode || this.editor.state.selectedObject?.userData.type !== 'Cube';
+    bend.disabled = dragging || this.editor.mesh.editMode || (this.editor.state.selectedObjects.length !== 1 || !this.editor.workflow.transformable(this.editor.state.selectedObject) || this.editor.state.selectedObject?.userData.type !== 'Cube');
     bend.setAttribute('aria-pressed', String(this.editor.bendTool?.active ?? false));
     document.getElementById('bend-options').hidden = !this.editor.bendTool?.active;
     for (const field of ['axis','direction']) {
@@ -293,7 +327,7 @@ export class EditorUI {
     extrude.disabled = dragging || !this.editor.extrudeTool?.canActivate();
     extrude.setAttribute('aria-pressed', String(this.editor.extrudeTool?.active ?? false));
     const taper = document.getElementById('taper-tool');
-    taper.disabled = dragging || this.editor.mesh.editMode || this.editor.state.selectedObject?.userData.type !== 'Cube';
+    taper.disabled = dragging || this.editor.mesh.editMode || (this.editor.state.selectedObjects.length !== 1 || !this.editor.workflow.transformable(this.editor.state.selectedObject) || this.editor.state.selectedObject?.userData.type !== 'Cube');
     taper.setAttribute('aria-pressed', String(this.editor.taperTool?.active ?? false));
     document.getElementById('taper-options').hidden = !this.editor.taperTool?.active;
     for (const field of ['axis', 'end']) {
@@ -302,7 +336,7 @@ export class EditorUI {
       select.value = this.editor.taperTool?.[field === 'end' ? 'side' : field] ?? (field === 'axis' ? 'y' : 'positive');
     }
     const skew = document.querySelector('#skew-tool');
-    skew.disabled = dragging || this.editor.mesh.editMode || this.editor.state.selectedObject?.userData.type !== 'Cube';
+    skew.disabled = dragging || this.editor.mesh.editMode || (this.editor.state.selectedObjects.length !== 1 || !this.editor.workflow.transformable(this.editor.state.selectedObject) || this.editor.state.selectedObject?.userData.type !== 'Cube');
     skew.setAttribute('aria-pressed', String(this.editor.skewTool?.active ?? false));
     document.getElementById('skew-axes').hidden = !this.editor.skewTool?.active;
     for (const field of ['axis', 'relativeTo']) {
@@ -321,10 +355,10 @@ export class EditorUI {
     }
 
     document.querySelector('#delete').disabled =
-      dragging || !this.editor.state.selectedObject;
+      dragging || this.editor.mesh.editMode || this.editor.state.selectedObjects.length !== 1 || !this.editor.workflow.transformable(this.editor.state.selectedObject);
 
     document.querySelector('#duplicate').disabled =
-      dragging || !this.editor.state.selectedObject;
+      dragging || this.editor.mesh.editMode || this.editor.state.selectedObjects.length !== 1 || !this.editor.workflow.transformable(this.editor.state.selectedObject);
 
     document.querySelector('#undo').disabled =
       dragging || this.editor.history.undoHistory.length === 0;
@@ -332,6 +366,14 @@ export class EditorUI {
     document.querySelector('#redo').disabled =
       dragging || this.editor.history.redoHistory.length === 0;
 
+    const workflow = this.editor.workflow;
+    const selected = this.editor.state.selectedObjects;
+    document.getElementById('group').disabled = workflow.busy() || selected.length < 2 || selected.some(o => o.isGroup || o.parent !== this.editor.viewport.scene || !workflow.editable(o));
+    document.getElementById('ungroup').disabled = workflow.busy() || selected.length !== 1 || !selected[0]?.isGroup || !workflow.transformable(selected[0]);
+    document.getElementById('frame-selected').disabled = dragging || !selected.length;
+    for (const id of ['transform-space','translation-snap','rotation-snap','scale-snap','view-preset','view-mode']) {
+      document.getElementById(id).disabled = dragging || (id === 'transform-space' && this.editor.mesh.editMode);
+    }
     const editButton =
       document.querySelector('#edit-mode');
 
@@ -339,18 +381,23 @@ export class EditorUI {
       dragging ||
       (
         !this.editor.mesh.editMode &&
-        this.editor.state.selectedObject?.userData.type !== 'Cube'
+        (this.editor.state.selectedObjects.length !== 1 || !this.editor.workflow.transformable(this.editor.state.selectedObject) || this.editor.state.selectedObject?.userData.type !== 'Cube')
       );
 
     editButton.textContent = this.editor.mesh.editMode
-      ? 'Object Mode (Tab)'
-      : 'Edit Mode (Tab)';
+      ? 'Edit Mode'
+      : 'Object Mode';
 
     editButton.setAttribute(
       'aria-pressed',
       String(this.editor.mesh.editMode)
     );
 
+    for (const [id, mode] of [['move-mode','translate'], ['rotate-mode','rotate'], ['scale-mode','scale']]) {
+      const button = document.getElementById(id);
+      button.disabled = dragging || this.editor.mesh.editMode;
+      button.setAttribute('aria-pressed', String(!active && this.editor.viewport.transformControls.getMode() === mode));
+    }
     // Mesh selection buttons
     for (const mode of ['vertex', 'edge', 'face']) {
       const button =

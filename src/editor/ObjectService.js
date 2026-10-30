@@ -17,45 +17,32 @@ export class ObjectService {
 
 
   duplicateSelectedObject = () => {
-    if (!!this.editor.modifiers?.transaction) return;
-      if (!this.editor.state.selectedObject) return;
-
-      const before = this.editor.history.takeSnapshot();
-
-      const duplicate = this.createMesh(
-        this.editor.state.selectedObject.userData.type,
-        this.getDimensions(this.editor.state.selectedObject)
-      );
-
-      duplicate.geometry.dispose();
-      duplicate.geometry = this.editor.state.selectedObject.geometry.clone();
-
-      duplicate.geometry.parameters = {
-        ...this.editor.state.selectedObject.geometry.parameters
-      };
-
-      this.giveObjectName(
-        duplicate,
-        this.editor.state.selectedObject.userData.type
-      );
-
-      duplicate.position
-        .copy(this.editor.state.selectedObject.position)
-        .add(new THREE.Vector3(1, 0, 1));
-
-      duplicate.quaternion.copy(
-        this.editor.state.selectedObject.quaternion
-      );
-
-      duplicate.scale.copy(
-        this.editor.state.selectedObject.scale
-      );
-
-      this.editor.state.objects.push(duplicate);
-      this.editor.viewport.scene.add(duplicate);
-
-      this.editor.selection.selectObject(duplicate);
-      this.editor.history.recordAction(before);
+    const e = this.editor, source = e.state.selectedObject;
+    if (e.workflow.busy() || !e.workflow.transformable(source) || e.state.selectedObjects.length !== 1) return;
+    const before = e.history.takeSnapshot();
+    const copy = original => {
+      const duplicate = original.isGroup ? new THREE.Group() : this.createMesh(original.userData.type, this.getDimensions(original));
+      if (original.isMesh) {
+        duplicate.geometry.dispose();
+        duplicate.geometry = original.geometry.clone();
+        duplicate.geometry.parameters = { ...original.geometry.parameters };
+      }
+      this.giveObjectName(duplicate, original.userData.type);
+      duplicate.position.copy(original.position);
+      duplicate.quaternion.copy(original.quaternion);
+      duplicate.scale.copy(original.scale);
+      duplicate.visible = original.visible;
+      duplicate.userData.locked = !!original.userData.locked;
+      e.state.objects.push(duplicate);
+      if (original.isGroup) for (const child of original.children) duplicate.add(copy(child));
+      return duplicate;
+    };
+    const duplicate = copy(source);
+    source.parent.add(duplicate);
+    duplicate.position.add(new THREE.Vector3(1, 0, 1));
+    e.views.applyMaterials();
+    e.selection.selectObject(duplicate);
+    e.history.recordAction(before);
   };
 
   createMesh = (type, dimensions = {}) => this.factory.create(type, dimensions);
@@ -74,7 +61,7 @@ export class ObjectService {
   };
 
   addObject = (type, dimensions = {}, position = {}) => {
-    if (!!this.editor.modifiers?.transaction) return;
+    if (this.editor.workflow.busy()) return;
     const before = this.editor.history.takeSnapshot();
 
     const object = this.createMesh(type);
@@ -93,6 +80,7 @@ export class ObjectService {
     this.editor.state.objects.push(object);
     this.editor.viewport.scene.add(object);
 
+    this.editor.views.applyMaterials();
     this.editor.selection.selectObject(object);
     this.editor.history.recordAction(before);
 
@@ -100,28 +88,18 @@ export class ObjectService {
   };
 
   deleteObject = (object) => {
-    if (!!this.editor.modifiers?.transaction) return;
-    if (!object) return;
-
-    const index = this.editor.state.objects.indexOf(object);
-
-    if (index === -1) {
-      throw new Error('Object not found.');
+    const e = this.editor;
+    if (e.workflow.busy() || !e.workflow.transformable(object)) return;
+    const before = e.history.takeSnapshot();
+    const removed = object.isGroup ? [object, ...object.children] : [object];
+    e.selection.setSelection(e.state.selectedObjects.filter(o => !removed.includes(o)));
+    object.removeFromParent();
+    for (const item of removed) {
+      e.state.objects.splice(e.state.objects.indexOf(item), 1);
+      item.geometry?.dispose();
+      item.material?.dispose();
     }
-
-    const before = this.editor.history.takeSnapshot();
-
-    if (this.editor.state.selectedObject === object) {
-      this.editor.selection.selectObject(null);
-    }
-
-    this.editor.state.objects.splice(index, 1);
-    this.editor.viewport.scene.remove(object);
-
-    object.geometry.dispose();
-    object.material.dispose();
-
-    this.editor.ui.updateOutliner();
-    this.editor.history.recordAction(before);
+    e.ui.updateOutliner();
+    e.history.recordAction(before);
   };
 }

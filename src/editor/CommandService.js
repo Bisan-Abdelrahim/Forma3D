@@ -53,6 +53,8 @@ export class CommandService {
       throw new Error('Target object not found.');
     }
 
+    if (!this.editor.workflow.editable(object) || object.isGroup) throw new Error('Target must be an unlocked, visible mesh.');
+
     if (command.action === 'delete') {
       this.editor.objects.deleteObject(object);
       return;
@@ -119,7 +121,7 @@ if (command.action === 'skew') {
       selectedId:
         this.editor.state.selectedObject?.userData.editorId ?? null,
 
-      objects: this.editor.state.objects.map(object => ({
+      objects: this.editor.state.objects.filter(object => object.isMesh && this.editor.workflow.editable(object)).map(object => ({
         id: object.userData.editorId,
         name: object.name,
         shape: object.userData.type.toLowerCase(),

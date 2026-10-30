@@ -564,6 +564,7 @@ export class MeshEditor {
       }
 
     } else {
+      if (this.editor.state.selectedObjects.length !== 1 || !this.editor.workflow.transformable(this.editor.state.selectedObject)) return;
       if (
         !this.editor.state.selectedObject ||
         this.editor.state.selectedObject.userData.type !== 'Cube'

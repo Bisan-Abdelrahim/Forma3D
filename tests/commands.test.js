@@ -1,3 +1,4 @@
+import { SceneViewport } from '../src/editor/SceneViewport.js';
 import { BevelModifier } from '../src/editor/modifiers/BevelModifier.js';
 import { InsetModifier } from '../src/editor/modifiers/InsetModifier.js';
 import { BendModifier } from '../src/editor/modifiers/BendModifier.js';
@@ -46,6 +47,9 @@ function editor(options = {}) {
     pointerUp() { this.dragging = false; }
     getMode() { return this.mode; }
     setTranslationSnap(value) { this.translationSnap = value; }
+    setRotationSnap(value) { this.rotationSnap = value; }
+    setScaleSnap(value) { this.scaleSnap = value; }
+    setSpace(value) { this.space = value; }
     addEventListener(name, fn) { this.listeners[name] = fn; }
   }
   globalThis.HTMLInputElement = class {};
@@ -679,4 +683,341 @@ test('toolbar shows tools for the current mode and keeps active-tool guidance sy
   e.click('inset-tool'); assert.match(e.find('#tool-status').textContent,/INSET/);
   e.click('edge-mode'); assert.equal(e.app.insetTool.active,false);
   assert.match(e.find('#tool-status').textContent,/Select a vertex/);
+});
+
+test('object multiselection toggles, highlights, excludes parent/child and drives a shared transform pivot', () => {
+  const e = editor(), app = e.app;
+  const a = e.objects[0];
+  app.objects.addObject('Sphere');
+  const b = app.state.selectedObject;
+  b.position.x = 4;
+  app.selection.selectObject(a);
+  app.selection.selectObject(b, true);
+  assert.deepEqual(app.state.selectedObjects, [a, b]);
+  assert.equal(a.material.color.getHex(), app.state.selectedColor);
+  assert.equal(b.material.color.getHex(), app.state.selectedColor);
+  assert.equal(e.transformControls.object, app.selection.pivot);
+  const events = e.transformControls.listeners;
+  events.mouseDown();
+  app.selection.pivot.position.y += 3;
+  events.objectChange(); events.mouseUp();
+  assert.equal(a.position.y, 3);
+  assert.equal(b.position.y, 3);
+  e.click('undo');
+  assert.equal(e.objects[0].position.y, 0);
+  assert.equal(app.state.selectedObjects.length, 2);
+  e.click('redo');
+  assert.equal(e.objects[0].position.y, 3);
+  app.selection.selectObject(app.state.selectedObjects[1], true);
+  assert.equal(app.state.selectedObjects.length, 1);
+  app.selection.selectObject(null, true);
+  assert.equal(app.state.selectedObjects.length, 1);
+  app.selection.selectObject(null);
+  assert.equal(app.state.selectedObjects.length, 0);
+});
+
+function worldVertices(object) {
+  object.updateWorldMatrix(true, false);
+  const positions = object.geometry.attributes.position;
+  return Array.from({ length: positions.count }, (_, i) => new THREE.Vector3().fromBufferAttribute(positions, i).applyMatrix4(object.matrixWorld));
+}
+function assertVertices(actual, expected) {
+  assert.equal(actual.length, expected.length);
+  actual.forEach((v, i) => assert.ok(v.distanceTo(expected[i]) < 1e-5));
+}
+
+test('group/ungroup preserve world surfaces, hierarchy, metadata and history, including shear', () => {
+  const e = editor(), app = e.app;
+  const a = e.objects[0];
+  a.position.set(-2, 1, 0); a.rotation.z = 0.4;
+  const b = app.objects.addObject('Sphere'); b.position.x = 3;
+  app.selection.setSelection([a, b]);
+  const before = worldVertices(a);
+  e.click('group');
+  const group = app.state.selectedObject;
+  assert.ok(group.isGroup);
+  assert.equal(a.parent, group);
+  assertVertices(worldVertices(a), before);
+  group.rotation.y = 0.7; group.scale.set(2, 1, 0.6);
+  const transformed = worldVertices(a), sphereTransformed = worldVertices(b);
+  e.click('ungroup');
+  assert.equal(a.parent, app.viewport.scene);
+  assertVertices(worldVertices(a), transformed);
+  assertVertices(worldVertices(b), sphereTransformed);
+  assert.equal(app.state.selectedObjects.length, 2);
+  e.click('undo');
+  assert.ok(app.state.selectedObject.isGroup);
+  assert.equal(app.state.selectedObject.children.length, 2);
+  e.click('redo');
+  assert.equal(e.objects.length, 2);
+  assertVertices(worldVertices(e.objects.find(o => o.name === a.name)), transformed);
+  assertVertices(worldVertices(e.objects.find(o => o.name === b.name)), sphereTransformed);
+});
+
+test('hidden and locked objects are not editable, are excluded from picking, and restore with undo/redo', () => {
+  const e = editor(), app = e.app;
+  let object = e.objects[0];
+  app.selection.selectObject(object);
+  app.workflow.toggle(object, 'visible');
+  assert.equal(object.visible, false);
+  assert.equal(app.state.selectedObject, null);
+  app.selection.selectObject(object);
+  assert.equal(app.state.selectedObject, null);
+  assert.throws(() => e.executeCommand({ action: 'move', target: object.userData.editorId, position: {x:1,y:0,z:0} }));
+  e.click('undo'); object = e.objects[0];
+  assert.equal(object.visible, true);
+  assert.equal(app.state.selectedObject, object);
+  e.click('redo'); assert.equal(e.objects[0].visible, false);
+  app.workflow.toggle(e.objects[0], 'visible');
+  object = e.objects[0];
+  app.workflow.toggle(object, 'locked');
+  assert.equal(object.visible, true);
+  assert.equal(object.userData.locked, true);
+  assert.equal(app.state.selectedObject, null);
+  assert.equal(app.workflow.editable(object), false);
+  e.click('undo'); assert.equal(e.objects[0].userData.locked, false);
+  e.click('redo'); assert.equal(e.objects[0].userData.locked, true);
+  app.workflow.toggle(e.objects[0], 'locked');
+  app.selection.selectObject(e.objects[0]);
+  assert.equal(e.transformControls.object, e.objects[0]);
+});
+
+test('group safety blocks locked descendants; duplicate/delete groups preserve geometry and undo', () => {
+  const e = editor(), app = e.app;
+  app.objects.addObject('Cube');
+  app.selection.setSelection([...e.objects]);
+  app.workflow.group();
+  let group = app.state.selectedObject;
+  app.workflow.toggle(group.children[0], 'locked');
+  assert.equal(e.transformControls.object, null);
+  assert.equal(app.workflow.transformable(group), false);
+  const count = e.objects.length;
+  app.objects.deleteObject(group);
+  assert.equal(e.objects.length, count);
+  app.workflow.toggle(group.children[0], 'locked');
+  app.selection.selectObject(group);
+  e.click('duplicate');
+  const copy = app.state.selectedObject;
+  assert.ok(copy.isGroup);
+  assert.equal(copy.children.length, 2);
+  assert.notEqual(copy.children[0].geometry, group.children[0].geometry);
+  e.click('delete');
+  assert.equal(e.objects.length, count);
+  e.click('undo');
+  assert.equal(app.state.selectedObject.children.length, 2);
+  e.click('redo'); assert.equal(e.objects.length, count);
+});
+
+test('Outliner supports Shift selection, visibility and lock; Edit Mode disables object workflow', () => {
+  const e = editor(), app = e.app;
+  app.objects.addObject('Cube');
+  const rows = app.ui.outliner.children;
+  rows[0].children[0].listeners.click({shiftKey:false});
+  rows[1].children[0].listeners.click({shiftKey:true});
+  assert.equal(app.state.selectedObjects.length, 2);
+  app.mesh.toggleEditMode();
+  assert.equal(app.mesh.editMode, false);
+  app.selection.selectObject(e.objects[0]);
+  app.mesh.toggleEditMode();
+  assert.equal(app.mesh.editMode, true);
+  assert.equal(e.find('#group').disabled, true);
+  const before = JSON.stringify(e.takeSnapshot());
+  app.workflow.toggle(e.objects[0], 'visible');
+  app.workflow.group();
+  assert.equal(JSON.stringify(e.takeSnapshot()), before);
+  app.mesh.toggleEditMode();
+  app.ui.updateOutliner();
+  app.ui.outliner.children[0].children[1].listeners.click();
+  assert.equal(e.objects[0].visible, false);
+  app.ui.outliner.children[0].children[1].listeners.click();
+  app.ui.outliner.children[0].children[2].listeners.click();
+  assert.equal(e.objects[0].userData.locked, true);
+});
+
+test('transform space and snap settings use native APIs; view materials return exactly to Solid', () => {
+  const e = editor(), app = e.app;
+  app.selection.selectObject(e.objects[0]);
+  const before = JSON.stringify(e.takeSnapshot());
+  e.find('#transform-space').listeners.change({target:{value:'local'}});
+  assert.equal(e.transformControls.space, 'local');
+  assert.equal(JSON.stringify(e.takeSnapshot()), before);
+  for (const [id, value, field, expected] of [
+    ['translation-snap','5','translationSnap',5],
+    ['rotation-snap','15','rotationSnap',Math.PI / 12],
+    ['scale-snap','0.25','scaleSnap',0.25]
+  ]) {
+    e.find(`#${id}`).listeners.change({target:{value}});
+    assert.ok(Math.abs(e.transformControls[field] - expected) < 1e-12);
+    e.find(`#${id}`).listeners.change({target:{value:'0'}});
+    assert.equal(e.transformControls[field], null);
+  }
+  const material = e.objects[0].material;
+  material.opacity = 0.8;
+  const original = [material.wireframe, material.transparent, material.opacity, material.depthWrite];
+  for (const mode of ['wireframe','xray','solid']) {
+    e.find('#view-mode').listeners.change({target:{value:mode}});
+    if (mode === 'wireframe') assert.equal(material.wireframe, true);
+    if (mode === 'xray') assert.equal(material.opacity, 0.3);
+  }
+  assert.deepEqual([material.wireframe, material.transparent, material.opacity, material.depthWrite], original);
+});
+
+test('all orthographic presets share active camera with controls; frame selected fits perspective and ortho', () => {
+  const e = editor(), app = e.app;
+  const viewport = new SceneViewport(app);
+  Object.assign(viewport, app.viewport);
+  viewport.renderer.setSize = () => {};
+  viewport.perspectiveCamera = new THREE.PerspectiveCamera(75, 800/600, 0.1, 1000);
+  viewport.perspectiveCamera.position.set(5,4,5);
+  viewport.orthographicCamera = new THREE.OrthographicCamera(-5,5,5,-5,0.1,1000);
+  viewport.orthoHeight = 10;
+  viewport.camera = viewport.perspectiveCamera;
+  viewport.controls = { target:new THREE.Vector3(), update() {}, enableDamping:true };
+  app.viewport = viewport;
+  const object = e.objects[0]; object.position.set(20,3,-8);
+  app.selection.selectObject(object);
+  const unchanged = JSON.stringify(e.takeSnapshot());
+  for (const preset of ['front','back','left','right','top','bottom','perspective']) {
+    app.views.setPreset(preset);
+    assert.equal(viewport.camera.isOrthographicCamera === true, preset !== 'perspective');
+    assert.equal(viewport.controls.object, viewport.camera);
+    assert.equal(viewport.transformControls.camera, viewport.camera);
+    app.views.frameSelected();
+    assert.ok(viewport.controls.target.distanceTo(object.position) < 1e-6);
+    viewport.camera.updateMatrixWorld(true);
+    for (const point of worldVertices(object)) {
+      const projected = point.clone().project(viewport.camera);
+      assert.ok(Math.abs(projected.x) <= 1 && Math.abs(projected.y) <= 1 && Math.abs(projected.z) <= 1);
+    }
+  }
+  assert.equal(JSON.stringify(e.takeSnapshot()), unchanged);
+});
+
+test('multi-object nonuniform scaling preserves world surfaces and active selection through history', () => {
+  const e = editor(), app = e.app;
+  const a = e.objects[0]; a.rotation.z = 0.6;
+  const b = app.objects.addObject('Cube'); b.position.x = 4; b.rotation.y = 0.3;
+  app.selection.setSelection([b, a]);
+  const source = worldVertices(a);
+  const pivotBefore = app.selection.pivot.matrixWorld.clone();
+  const events = e.transformControls.listeners;
+  events.mouseDown();
+  app.selection.pivot.scale.set(2, 0.7, 1);
+  app.selection.pivot.updateMatrixWorld(true);
+  const delta = app.selection.pivot.matrixWorld.clone().multiply(pivotBefore.invert());
+  const expected = source.map(v => v.clone().applyMatrix4(delta));
+  events.objectChange(); events.mouseUp();
+  assertVertices(worldVertices(a), expected);
+  const activeId = a.userData.editorId;
+  e.click('undo'); e.click('redo');
+  assert.equal(app.state.selectedObject.userData.editorId, activeId);
+  assertVertices(worldVertices(app.state.selectedObject), expected);
+});
+
+test('viewport picking skips hidden/locked meshes and supports Shift selection', () => {
+  const e = editor(), app = e.app;
+  const cube = e.objects[0], sphere = app.objects.addObject('Sphere');
+  const input = app.input;
+  let candidates;
+  input.raycaster.intersectObjects = objects => { candidates = objects; return objects.length ? [{object:objects[0]}] : []; };
+  const canvas = app.viewport.renderer.domElement;
+  const click = shiftKey => {
+    canvas.listeners.pointerdown({button:0,clientX:400,clientY:300,pointerId:1});
+    canvas.listeners.pointerup({button:0,clientX:400,clientY:300,pointerId:1,shiftKey});
+  };
+  app.selection.selectObject(sphere);
+  click(true);
+  assert.equal(app.state.selectedObjects.length, 2);
+  app.workflow.toggle(cube, 'visible');
+  click(false);
+  assert.deepEqual(candidates, [sphere]);
+  app.workflow.toggle(sphere, 'locked');
+  click(false);
+  assert.equal(candidates.length, 0);
+  assert.equal(app.state.selectedObject, null);
+});
+
+test('Ctrl and Meta clicks toggle objects in Outliner and viewport without changing Edit Mode selection', () => {
+  const e = editor(), app = e.app;
+  const a = e.objects[0], b = app.objects.addObject('Cube');
+  app.ui.outliner.children[0].children[0].listeners.click({ctrlKey:true});
+  assert.deepEqual(app.state.selectedObjects, [b,a]);
+  app.ui.outliner.children[1].children[0].listeners.click({metaKey:true});
+  assert.deepEqual(app.state.selectedObjects, [a]);
+  const input = app.input;
+  input.raycaster.intersectObjects = () => [{object:b}];
+  const canvas = app.viewport.renderer.domElement;
+  canvas.listeners.pointerdown({button:0,clientX:400,clientY:300,pointerId:1});
+  canvas.listeners.pointerup({button:0,clientX:400,clientY:300,pointerId:1,ctrlKey:true});
+  assert.deepEqual(app.state.selectedObjects, [a,b]);
+  app.selection.selectObject(a);
+  app.mesh.toggleEditMode();
+  assert.equal(app.ui.outliner.children[0].children[1].disabled, true);
+  app.selection.selectObject(b,true);
+  assert.equal(app.state.selectedObject,a);
+});
+
+test('toolbar transform buttons share keyboard behavior and respect edit/drag locks', () => {
+  const e = editor(), app = e.app;
+  app.selection.selectObject(e.objects[0]);
+  for (const [id,mode] of [['rotate-mode','rotate'],['scale-mode','scale'],['move-mode','translate']]) {
+    e.click(id);
+    assert.equal(e.transformControls.getMode(),mode);
+  }
+  app.skewTool.setActive(true);
+  e.click('rotate-mode');
+  assert.equal(app.skewTool.active,false);
+  assert.equal(e.transformControls.getMode(),'rotate');
+  e.transformControls.dragging = true;
+  e.click('scale-mode');
+  assert.equal(e.transformControls.getMode(),'rotate');
+  e.transformControls.dragging = false;
+  app.mesh.toggleEditMode();
+  assert.equal(e.find('#rotate-mode').disabled,true);
+  e.click('rotate-mode');
+  assert.equal(e.transformControls.getMode(),'translate');
+});
+
+test('object search retains group context, reports no results, and never changes selection', () => {
+  const e = editor(), app = e.app;
+  const a = e.objects[0], b = app.objects.addObject('Sphere');
+  app.selection.setSelection([a,b]); app.workflow.group();
+  const group = app.state.selectedObject;
+  const search = e.find('#object-search');
+  search.value = 'sphere'; search.listeners.input();
+  assert.equal(app.ui.outliner.children.length,2);
+  assert.equal(app.state.selectedObject,group);
+  search.value = 'group'; search.listeners.input();
+  assert.equal(app.ui.outliner.children.length,3);
+  search.value = 'missing'; search.listeners.input();
+  assert.equal(app.ui.outliner.children.length,0);
+  assert.equal(e.find('#outliner-empty').hidden,false);
+  search.value = ''; search.listeners.input();
+  assert.equal(app.ui.outliner.children.length,3);
+  assert.equal(e.find('#outliner-empty').hidden,true);
+});
+
+test('dropdowns close siblings and outside clicks, and Escape returns focus to the trigger', () => {
+  const e = editor(), ui = e.app.ui;
+  const [add,object] = ui.menus;
+  add.id = 'add-menu'; object.id = 'object-menu';
+  add.open = true;
+  object.open = true; object.listeners.toggle();
+  assert.equal(add.open,false);
+  assert.equal(object.open,true);
+  let prevented = false;
+  object.listeners.keydown({key:'Escape',preventDefault(){prevented=true;},stopPropagation(){}});
+  assert.equal(object.open,false);
+  assert.equal(prevented,true);
+  assert.equal(document.activeElement,e.find('#object-menu > summary'));
+  object.open = true;
+  window.listeners.pointerdown({target:{closest(){return null;}}});
+  assert.equal(object.open,false);
+  const one = e.find('#add-cube'), two = e.find('#add-sphere');
+  add.querySelectorAll = () => [one,two];
+  document.activeElement = null;
+  add.listeners.keydown({key:'ArrowDown',preventDefault(){}});
+  assert.equal(document.activeElement,one);
+  add.listeners.keydown({key:'ArrowDown',preventDefault(){}});
+  assert.equal(document.activeElement,two);
 });

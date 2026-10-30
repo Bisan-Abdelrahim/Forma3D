@@ -2,7 +2,9 @@ export class EditorState {
   constructor() {
     this.objects = [];
     this.selectedObject = null;
+    this.selectedObjects = [];
     this.nameCounts = {
+      Group: 0,
       Cube: 0,
       Sphere: 0,
       Cylinder: 0

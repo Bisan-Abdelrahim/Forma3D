@@ -3,6 +3,14 @@ import * as THREE from 'three';
 export class InputController {
   constructor(editor) { this.editor = editor; }
 
+  setTransformMode(mode) {
+    const e = this.editor;
+    if (e.mesh.editMode || e.viewport.transformControls.dragging || e.modifiers?.transaction) return;
+    for (const name of ['skewTool','taperTool','bendTool','bevelTool']) if (e[name]?.active) e[name].setActive(false);
+    e.viewport.transformControls.setMode(mode);
+    e.ui.updateButtons();
+  }
+
   bind() {
     document.querySelector('#undo').addEventListener('click', this.editor.history.undo);
     document.querySelector('#redo').addEventListener('click', this.editor.history.redo);
@@ -19,6 +27,7 @@ export class InputController {
       if (
         event.target instanceof HTMLInputElement ||
         event.target instanceof HTMLTextAreaElement ||
+        event.target.tagName === 'SELECT' ||
         event.target.isContentEditable ||
         event.ctrlKey ||
         event.metaKey ||
@@ -27,6 +36,8 @@ export class InputController {
       ) {
         return;
       }
+
+      if (event.code === 'KeyF') { this.editor.views.frameSelected(); return; }
 
       // Tab: Object / Edit Mode
       if (
@@ -58,30 +69,20 @@ export class InputController {
         return;
       }
 
-      if (['KeyM', 'KeyR', 'KeyS'].includes(event.code) && this.editor.skewTool?.active) this.editor.skewTool.setActive(false);
-      if (['KeyM', 'KeyR', 'KeyS'].includes(event.code) && this.editor.taperTool?.active) this.editor.taperTool.setActive(false);
-      if (['KeyM', 'KeyR', 'KeyS'].includes(event.code) && this.editor.bendTool?.active) this.editor.bendTool.setActive(false);
-      if (['KeyM','KeyR','KeyS'].includes(event.code) && this.editor.bevelTool?.active) this.editor.bevelTool.setActive(false);
-      // Object transformations
-      if (event.code === 'KeyM') {
-        this.editor.viewport.transformControls.setMode('translate');
-
-      } else if (event.code === 'KeyR') {
-        this.editor.viewport.transformControls.setMode('rotate');
-
-      } else if (event.code === 'KeyS') {
-        this.editor.viewport.transformControls.setMode('scale');
-      }
+      const modes = { KeyM: 'translate', KeyR: 'rotate', KeyS: 'scale' };
+      if (modes[event.code]) this.setTransformMode(modes[event.code]);
     });
     this.editor.viewport.transformControls.addEventListener(
       'mouseDown',
       () => {
         this.dragStartSnapshot = this.editor.history.takeSnapshot();
+        this.editor.selection.beginTransform();
       }
     );
     this.editor.viewport.transformControls.addEventListener(
       'objectChange',
       () => {
+        this.editor.selection.updateTransform();
         // Works for Vertex / Edge / Face modes.
         this.editor.mesh.updateSelectedVertexGeometry();
         this.editor.ui.updateProperties();
@@ -95,6 +96,7 @@ export class InputController {
         }
 
         this.dragStartSnapshot = null;
+        this.editor.selection.endTransform();
       }
     );
     this.editor.viewport.transformControls.addEventListener(
@@ -254,14 +256,15 @@ export class InputController {
         // ======================================
 
         const intersections = this.raycaster.intersectObjects(
-          this.editor.state.objects,
+          this.editor.state.objects.filter(o => o.isMesh && this.editor.workflow.editable(o)),
           false
         );
 
         this.editor.selection.selectObject(
           intersections.length > 0
-            ? intersections[0].object
-            : null
+            ? this.editor.workflow.pickTarget(intersections[0].object)
+            : null,
+          !!(event.ctrlKey || event.metaKey || event.shiftKey)
         );
       }
     );

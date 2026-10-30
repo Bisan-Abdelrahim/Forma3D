@@ -27,6 +27,9 @@ export class SceneViewport {
       75, 1, 0.1, 1000
     );
     this.camera.position.set(5, 4, 5);
+    this.perspectiveCamera = this.camera;
+    this.orthographicCamera = new THREE.OrthographicCamera(-5, 5, 5, -5, 0.1, 1000);
+    this.orthoHeight = 10;
     this.renderer = new THREE.WebGLRenderer({
       antialias: true
     });
@@ -55,7 +58,13 @@ export class SceneViewport {
     const width = Math.max(1, this.editor.ui.viewport.clientWidth);
     const height = Math.max(1, this.editor.ui.viewport.clientHeight);
 
-    this.camera.aspect = width / height;
+    if (this.camera.isOrthographicCamera) {
+      const half = this.orthoHeight / 2;
+      this.camera.left = -half * width / height;
+      this.camera.right = half * width / height;
+      this.camera.top = half;
+      this.camera.bottom = -half;
+    } else this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
 
     this.renderer.setSize(width, height);

@@ -1,3 +1,5 @@
+import { ObjectWorkflow } from './ObjectWorkflow.js';
+import { ViewService } from './ViewService.js';
 import { BevelTool } from './tools/BevelTool.js';
 import { BevelModifier } from './modifiers/BevelModifier.js';
 import { InsetTool } from './tools/InsetTool.js';
@@ -49,6 +51,8 @@ export class EditorApp {
 
     // Selection Management
     this.selection = new SelectionService(this);
+    this.workflow = new ObjectWorkflow(this);
+    this.views = new ViewService(this);
 
     // Undo / Redo
     this.history = new HistoryService(this);
@@ -103,6 +107,7 @@ export class EditorApp {
 
     // Bind Keyboard / Mouse Events
     this.input.bind();
+    this.views.bind();
     this.skewTool.bind();
     this.taperTool.bind();
     this.extrudeTool.bind();
