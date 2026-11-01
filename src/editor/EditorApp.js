@@ -2,6 +2,7 @@ import { ObjectWorkflow } from './ObjectWorkflow.js';
 import { ViewService } from './ViewService.js';
 import { BevelTool } from './tools/BevelTool.js';
 import { BevelModifier } from './modifiers/BevelModifier.js';
+import { EdgeBevelModifier } from './modifiers/EdgeBevelModifier.js';
 import { InsetTool } from './tools/InsetTool.js';
 import { InsetModifier } from './modifiers/InsetModifier.js';
 import { BendTool } from './tools/BendTool.js';
@@ -80,6 +81,7 @@ export class EditorApp {
     this.insetTool = new InsetTool(this);
     this.bevelTool = new BevelTool(this);
     this.modifiers.register('bevel',new BevelModifier());
+    this.modifiers.register('edgeBevel', new EdgeBevelModifier());
     this.modifiers.register('inset', new InsetModifier());
     this.bendTool = new BendTool(this);
     this.modifiers.register('bend', new BendModifier());

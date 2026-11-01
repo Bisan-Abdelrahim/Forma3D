@@ -5,9 +5,14 @@ export class InputController {
 
   setTransformMode(mode) {
     const e = this.editor;
-    if (e.mesh.editMode || e.viewport.transformControls.dragging || e.modifiers?.transaction) return;
-    for (const name of ['skewTool','taperTool','bendTool','bevelTool']) if (e[name]?.active) e[name].setActive(false);
-    e.viewport.transformControls.setMode(mode);
+    if (!['translate', 'rotate', 'scale'].includes(mode) || e.viewport.transformControls.dragging || e.modifiers?.transaction) return;
+    for (const name of ['skewTool','taperTool','bendTool','bevelTool','extrudeTool','insetTool']) if (e[name]?.active) e[name].setActive(false);
+    if (e.mesh.editMode) {
+      e.mesh.editTransformMode = mode;
+      e.mesh.updateVertexSelectionGizmo({preserveTransform: true});
+    } else {
+      e.viewport.transformControls.setMode(mode);
+    }
     e.ui.updateButtons();
   }
 
@@ -54,6 +59,9 @@ export class InputController {
         return;
       }
 
+      const modes = { KeyM: 'translate', KeyR: 'rotate', KeyS: 'scale' };
+      if (modes[event.code]) { this.setTransformMode(modes[event.code]); return; }
+
       // Mesh selection shortcuts
       if (this.editor.mesh.editMode) {
         if (event.code === 'Digit1') {
@@ -68,15 +76,13 @@ export class InputController {
 
         return;
       }
-
-      const modes = { KeyM: 'translate', KeyR: 'rotate', KeyS: 'scale' };
-      if (modes[event.code]) this.setTransformMode(modes[event.code]);
     });
     this.editor.viewport.transformControls.addEventListener(
       'mouseDown',
       () => {
         this.dragStartSnapshot = this.editor.history.takeSnapshot();
         this.editor.selection.beginTransform();
+        this.editor.mesh.beginVertexTransform();
       }
     );
     this.editor.viewport.transformControls.addEventListener(
@@ -97,6 +103,7 @@ export class InputController {
 
         this.dragStartSnapshot = null;
         this.editor.selection.endTransform();
+        this.editor.mesh.endVertexTransform();
       }
     );
     this.editor.viewport.transformControls.addEventListener(
@@ -199,6 +206,7 @@ export class InputController {
         // ======================================
 
         if (this.editor.mesh.editMode) {
+          const multiSelect = !!(event.ctrlKey || event.metaKey || event.shiftKey);
 
           // EDGE MODE
           if (this.editor.mesh.meshSelectionMode === 'edge') {
@@ -210,7 +218,8 @@ export class InputController {
             this.editor.mesh.selectEdgeMarker(
               edgeHits.length > 0
                 ? edgeHits[0].object
-                : null
+                : null,
+              multiSelect
             );
           }
 
@@ -221,15 +230,10 @@ export class InputController {
               false
             );
 
-            if (vertexHits.length > 0) {
-              this.editor.mesh.selectVertexMarker(
-                vertexHits[0].object,
-                event.shiftKey
-              );
-
-            } else if (!event.shiftKey) {
-              this.editor.mesh.selectVertexMarker(null);
-            }
+            this.editor.mesh.selectVertexMarker(
+              vertexHits.length > 0 ? vertexHits[0].object : null,
+              multiSelect
+            );
           }
 
           // FACE MODE
@@ -245,7 +249,7 @@ export class InputController {
                 ? faceHits[0].faceIndex
                 : null;
 
-            this.editor.mesh.selectFaceByTriangle(triangleIndex);
+            this.editor.mesh.selectFaceByTriangle(triangleIndex, multiSelect);
           }
 
           return;

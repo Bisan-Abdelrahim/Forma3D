@@ -1,5 +1,7 @@
 import { SceneViewport } from '../src/editor/SceneViewport.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { BevelModifier } from '../src/editor/modifiers/BevelModifier.js';
+import { EdgeBevelModifier } from '../src/editor/modifiers/EdgeBevelModifier.js';
 import { InsetModifier } from '../src/editor/modifiers/InsetModifier.js';
 import { BendModifier } from '../src/editor/modifiers/BendModifier.js';
 import { ExtrudeModifier } from '../src/editor/modifiers/ExtrudeModifier.js';
@@ -28,11 +30,12 @@ test('strict command boundary rejects malformed and dangerous payloads', () => {
 function editor(options = {}) {
   const elements = new Map();
   const element = () => ({
-    style: {}, remove() {}, setPointerCapture() {}, hasPointerCapture() { return false; },
+    style: {setProperty() {}}, dataset: {}, remove() {}, setPointerCapture() {}, hasPointerCapture() { return false; },
     value: '', listeners: {}, children: [], validity: { valid: true },
     focus() { document.activeElement = this; },
     getBoundingClientRect() { return { left: 0, top: 0, width: 800, height: 600 }; },
-    classList: { toggle() {} },
+    classList: { toggle() {}, add() {}, remove() {} },
+    contains(target) { return target === this || this.children.some(child => child.contains(target)); },
     appendChild(child) { this.children.push(child); },
     replaceChildren() { this.children.length = 0; }, setAttribute() {},
     addEventListener(name, fn) { this.listeners[name] = fn; },
@@ -40,7 +43,7 @@ function editor(options = {}) {
   });
   const find = id => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); };
   class Transform {
-    dragging = false; axis = null; mode = 'translate'; listeners = {};
+    dragging = false; axis = null; mode = 'translate'; space = 'world'; listeners = {};
     attach(object) { this.object = object; }
     detach() { this.object = null; }
     setMode(mode) { this.mode = mode; }
@@ -54,23 +57,65 @@ function editor(options = {}) {
   }
   globalThis.HTMLInputElement = class {};
   globalThis.HTMLTextAreaElement = class {};
-  globalThis.document = { querySelector: find, getElementById: id => find(`#${id}`), createElement: element };
+  globalThis.document = { body: element(), addEventListener() {}, querySelector: find, getElementById: id => find(`#${id}`), createElement: element };
   globalThis.window = { listeners: {}, addEventListener(name, fn) { const previous = this.listeners[name]; this.listeners[name] = event => { previous?.(event); fn(event); }; } };
-  const app = new EditorApp({ createViewport: editor => ({
-    scene: new THREE.Scene(), camera: new THREE.PerspectiveCamera(),
-    renderer: { domElement: element() }, transformControls: new Transform(), controls: {},
-    setup() {
-      editor.ui.viewport = find('#viewport');
-      editor.ui.outliner = find('#outliner');
-      editor.ui.properties = find('#properties');
-    }, start() {}
-  }), ...options }).start();
+  const app = new EditorApp({ createViewport: editor => {
+    const camera = new THREE.PerspectiveCamera(), canvas = element();
+    return {
+      scene: new THREE.Scene(), camera,
+      renderer: { domElement: canvas }, transformControls: options.createTransformControls?.(camera) ?? new Transform(), controls: {},
+      setup() {
+        editor.ui.viewport = find('#viewport');
+        editor.ui.outliner = find('#outliner');
+        editor.ui.properties = find('#properties');
+      }, start() {}
+    };
+  }, ...options }).start();
   return {
     app, executeCommand: app.commands.executeCommand, takeSnapshot: app.history.takeSnapshot,
     objects: app.state.objects, transformControls: app.viewport.transformControls,
     click: id => find(`#${id}`).listeners.click(), find
   };
 }
+
+function selectMeshComponents(e, mode) {
+  const mesh = e.app.mesh;
+  e.app.selection.selectObject(e.objects[0]);
+  if (!mesh.editMode) e.click('edit-mode');
+  mesh.setMeshSelectionMode(mode);
+  if (mode === 'vertex') {
+    mesh.selectVertexMarker(mesh.vertexMarkers[0]);
+    mesh.selectVertexMarker(mesh.vertexMarkers[2], true);
+  } else if (mode === 'edge') {
+    mesh.selectEdgeMarker(mesh.edgeMarkers[0]);
+    mesh.selectEdgeMarker(mesh.edgeMarkers[1], true);
+  } else {
+    mesh.selectFaceByTriangle(0);
+    mesh.selectFaceByTriangle(4, true);
+  }
+}
+
+test('UI mode guides follow actual editor modes without changing scene/history or restarting for new objects', () => {
+  const e = editor(), app = e.app, guide = app.ui.guide;
+  assert.equal(guide.current.key, 'object');
+  const before = e.takeSnapshot();
+  guide.next(); guide.closeButton.listeners.click();
+  app.ui.updateButtons();
+  assert.equal(guide.current, null);
+  assert.deepEqual(e.takeSnapshot(), before);
+  e.click('add-sphere');
+  assert.equal(guide.current, null);
+  app.selection.selectObject(e.objects[0]);
+  const geometry = e.takeSnapshot();
+  e.click('edit-mode');
+  assert.equal(guide.current.key, 'edit:vertex');
+  guide.dismiss(); e.click('edge-mode');
+  assert.equal(guide.current.key, 'edit:edge');
+  guide.dismiss(); e.click('vertex-mode');
+  assert.equal(guide.current, null);
+  assert.deepEqual(e.takeSnapshot(), geometry);
+  assert.equal(app.history.undoHistory.length, 1);
+});
 
 test('five actions synchronize scene, selection and history; all shapes survive restore', () => {
   const e = editor();
@@ -169,6 +214,564 @@ test('selection exits edit mode cleanly and supports vertex multiselect', () => 
   assert.equal(e.transformControls.object, e.objects[0]);
   e.click('add-sphere'); e.click('edit-mode');
   assert.equal(mesh.editMode, false);
+});
+
+for (const mode of ['vertex', 'edge', 'face']) {
+  test(`Edit Mode ${mode} clicks replace or toggle selection with Ctrl, Shift and Meta`, () => {
+    for (const modifier of ['ctrlKey', 'shiftKey', 'metaKey']) {
+      const e = editor(), mesh = e.app.mesh;
+      e.app.selection.selectObject(e.objects[0]);
+      e.click('edit-mode');
+      mesh.setMeshSelectionMode(mode);
+      const before = e.takeSnapshot();
+      const targets = mode === 'vertex' ? mesh.vertexMarkers : mesh.edgeMarkers;
+      const click = (target, modified = false) => {
+        e.app.input.raycaster.intersectObjects = () => target === null ? [] : [{object: targets[target]}];
+        e.app.input.raycaster.intersectObject = () => target === null ? [] : [{faceIndex: target}];
+        const event = {button: 0, pointerId: 1, clientX: 400, clientY: 300, [modifier]: modified};
+        const canvas = e.app.viewport.renderer.domElement;
+        canvas.listeners.pointerdown(event);
+        canvas.listeners.pointerup(event);
+      };
+      // Faces 0 and 2, and edges 0 and 1, share physical vertices.
+      const second = mode === 'face' ? 4 : 1;
+      const selectedCount = () => mode === 'vertex' ? mesh.selectedVertexMarkers.size
+        : mode === 'edge' ? mesh.selectedEdgeMarkers.size : mesh.selectedFaceIndices.size;
+      click(0);
+      click(second, true);
+      assert.equal(selectedCount(), 2);
+      assert.equal(mesh.selectedVertexMarkers.size, {vertex: 2, edge: 3, face: 6}[mode]);
+      assert.equal(e.transformControls.object, mesh.vertexPivot);
+      if (mode === 'edge') {
+        assert.equal(mesh.selectedEdgeMarker, null);
+        for (const edge of mesh.edgeMarkers) {
+          assert.equal(edge.material, [targets[0], targets[1]].includes(edge)
+            ? mesh.selectedEdgeMaterial : mesh.edgeMarkerMaterial);
+        }
+      }
+      if (mode === 'face') {
+        assert.equal(mesh.selectedFaceIndex, null);
+        assert.equal(mesh.faceHighlightGeometry.attributes.position.count, 12);
+        assert.equal(mesh.faceHighlight.parent, e.objects[0]);
+      }
+      click(null, true);
+      assert.equal(selectedCount(), 2);
+      // Either triangle must toggle the same quad face.
+      click(mode === 'face' ? 1 : 0, true);
+      assert.equal(selectedCount(), 1);
+      assert.equal(mesh.selectedVertexMarkers.size, {vertex: 1, edge: 2, face: 4}[mode]);
+      if (mode === 'edge') assert.equal(mesh.selectedEdgeMarker, targets[1]);
+      if (mode === 'face') {
+        assert.equal(mesh.selectedFaceIndex, 2);
+        assert.equal(mesh.faceHighlightGeometry.attributes.position.count, 6);
+      }
+      click(second, true);
+      assert.equal(selectedCount(), 0);
+      assert.equal(mesh.selectedVertexMarkers.size, 0);
+      assert.equal(e.transformControls.object, null);
+      assert.equal(mesh.vertexPivot.parent, null);
+      assert.equal(mesh.faceHighlight.parent, null);
+      click(0);
+      click(second);
+      assert.equal(selectedCount(), 1);
+      click(null);
+      assert.equal(selectedCount(), 0);
+      assert.equal(e.transformControls.object, null);
+      assert.equal(e.app.history.undoHistory.length, 0);
+      assert.deepEqual(e.takeSnapshot(), before);
+    }
+  });
+
+  test(`multiple ${mode} components move together once per shared vertex and survive Undo/Redo`, () => {
+    const e = editor(), mesh = e.app.mesh, object = e.objects[0];
+    object.position.set(3, -2, 4);
+    object.rotation.set(0.2, 0.5, -0.3);
+    object.scale.set(2, 1.5, 0.75);
+    e.app.selection.selectObject(object);
+    e.click('edit-mode');
+    mesh.setMeshSelectionMode(mode);
+    if (mode === 'vertex') {
+      mesh.selectVertexMarker(mesh.vertexMarkers[0]);
+      mesh.selectVertexMarker(mesh.vertexMarkers[1], true);
+    } else if (mode === 'edge') {
+      mesh.selectEdgeMarker(mesh.edgeMarkers[0]);
+      mesh.selectEdgeMarker(mesh.edgeMarkers[1], true);
+    } else {
+      mesh.selectFaceByTriangle(0);
+      mesh.selectFaceByTriangle(4, true);
+    }
+    const selected = [...mesh.selectedVertexMarkers];
+    const center = new THREE.Vector3();
+    selected.forEach(marker => center.add(marker.position));
+    center.divideScalar(selected.length);
+    object.localToWorld(center);
+    assert.ok(mesh.vertexPivot.position.distanceTo(center) < 1e-12);
+    const markers = mesh.vertexMarkers.map(marker => ({
+      marker, world: object.localToWorld(marker.position.clone()), selected: selected.includes(marker)
+    }));
+    const before = e.takeSnapshot();
+    const events = e.transformControls.listeners;
+    events.mouseDown();
+    const delta = new THREE.Vector3(0.5, -0.25, 0.75);
+    // Multiple objectChange events in one drag must still make one history action.
+    mesh.vertexPivot.position.addScaledVector(delta, 0.5);
+    events.objectChange();
+    mesh.vertexPivot.position.addScaledVector(delta, 0.5);
+    events.objectChange();
+    events.mouseUp();
+    assert.equal(e.app.history.undoHistory.length, 1);
+    const positions = object.geometry.attributes.position;
+    for (const {marker, world, selected} of markers) {
+      const expected = selected ? world.add(delta) : world;
+      assert.ok(object.localToWorld(marker.position.clone()).distanceTo(expected) < 1e-12);
+      for (const index of marker.userData.vertexIndices) {
+        assert.ok(object.localToWorld(new THREE.Vector3().fromBufferAttribute(positions, index)).distanceTo(expected) < 1e-6);
+      }
+    }
+    if (mode === 'edge') for (const edge of mesh.edgeMarkers) {
+      const start = edge.userData.startMarker.position, end = edge.userData.endMarker.position;
+      assert.ok(edge.position.distanceTo(start.clone().add(end).multiplyScalar(0.5)) < 1e-12);
+      assert.ok(Math.abs(edge.scale.y - start.distanceTo(end)) < 1e-12);
+    }
+    if (mode === 'face') {
+      const highlighted = Array.from(mesh.faceHighlightGeometry.attributes.position.array);
+      const expected = [];
+      for (const face of [0, 2]) for (let i = face * 6; i < face * 6 + 6; i++) {
+        const index = object.geometry.index.getX(i);
+        expected.push(positions.getX(index), positions.getY(index), positions.getZ(index));
+      }
+      assert.deepEqual(highlighted, expected);
+    }
+    const after = e.takeSnapshot();
+    // A click or a drag without movement must leave history untouched.
+    events.mouseDown(); events.objectChange(); events.mouseUp();
+    assert.equal(e.app.history.undoHistory.length, 1);
+    e.click('undo');
+    assert.deepEqual(e.takeSnapshot(), before);
+    assert.equal(mesh.selectedEdgeMarkers.size, 0);
+    assert.equal(mesh.selectedFaceIndices.size, 0);
+    assert.equal(mesh.selectedVertexMarkers.size, 0);
+    assert.equal(mesh.faceHighlight.parent, null);
+    e.click('redo');
+    assert.deepEqual(e.takeSnapshot(), after);
+    e.click('edit-mode');
+    assert.equal(mesh.selectedVertexMarkers.size, 0);
+  });
+}
+
+for (const mode of ['vertex', 'edge', 'face']) for (const operation of ['rotate', 'scale']) {
+  test(`${operation} multiple ${mode} components in World/Local space under transformed parents`, () => {
+    for (const space of ['world', 'local']) {
+      const e = editor(), app = e.app, mesh = app.mesh, object = e.objects[0];
+      const group = new THREE.Group();
+      app.objects.giveObjectName(group, 'Group');
+      group.position.set(1, 2, -1);
+      group.rotation.set(0.3, -0.4, 0.2);
+      group.scale.set(1.5, 0.75, 2);
+      object.position.set(2, -1, 3);
+      object.rotation.set(-0.2, 0.6, 0.1);
+      object.scale.set(2, 1.25, 0.8);
+      app.viewport.scene.add(group);
+      group.add(object);
+      app.state.objects.push(group);
+      selectMeshComponents(e, mode);
+      e.find('#transform-space').listeners.change({target: {value: space}});
+      e.click(operation === 'rotate' ? 'rotate-mode' : 'scale-mode');
+      const frame = space === 'local' ? object.getWorldQuaternion(new THREE.Quaternion()).normalize()
+        : new THREE.Quaternion();
+      assert.ok(mesh.vertexPivot.quaternion.angleTo(frame) < 1e-7);
+      const center = mesh.vertexPivot.position.clone();
+      const markers = mesh.vertexMarkers.map(marker => ({
+        marker, world: object.localToWorld(marker.position.clone()), selected: mesh.selectedVertexMarkers.has(marker)
+      }));
+      const before = e.takeSnapshot(), events = e.transformControls.listeners;
+      const angle = Math.PI / 3, factors = new THREE.Vector3(1.5, 0.75, 1.25);
+      const axis = new THREE.Vector3(0, 0, 1).applyQuaternion(frame);
+      const turn = new THREE.Quaternion().setFromAxisAngle(axis, angle);
+      events.mouseDown();
+      if (operation === 'rotate') mesh.vertexPivot.quaternion.copy(new THREE.Quaternion().setFromAxisAngle(axis, angle / 2)).multiply(frame);
+      else mesh.vertexPivot.scale.set(1.25, 0.875, 1.125);
+      events.objectChange();
+      if (operation === 'rotate') mesh.vertexPivot.quaternion.copy(turn).multiply(frame);
+      else mesh.vertexPivot.scale.copy(factors);
+      events.objectChange(); events.objectChange();
+      events.mouseUp();
+      assert.equal(app.history.undoHistory.length, 1);
+      assert.equal(mesh.vertexTransform, null);
+      assert.deepEqual(mesh.vertexPivot.scale.toArray(), [1, 1, 1]);
+      assert.ok(mesh.vertexPivot.quaternion.angleTo(frame) < 1e-7);
+      const positions = object.geometry.attributes.position;
+      for (const {marker, world, selected} of markers) {
+        const expected = world.clone();
+        if (selected) {
+          expected.sub(center);
+          if (operation === 'rotate') expected.applyQuaternion(turn);
+          else expected.applyQuaternion(frame.clone().invert()).multiply(factors).applyQuaternion(frame);
+          expected.add(center);
+        }
+        assert.ok(object.localToWorld(marker.position.clone()).distanceTo(expected) < 1e-10);
+        for (const index of marker.userData.vertexIndices) {
+          assert.ok(object.localToWorld(new THREE.Vector3().fromBufferAttribute(positions, index)).distanceTo(expected) < 2e-6);
+        }
+      }
+      assert.ok(object.geometry.attributes.normal.array.every(Number.isFinite));
+      const after = e.takeSnapshot();
+      for (let i = 0; i < before.objects.length; i++) {
+        for (const field of ['position', 'rotation', 'scale', 'topology']) {
+          assert.deepEqual(after.objects[i][field], before.objects[i][field]);
+        }
+      }
+      // The next drag starts with a clean pivot, and returning to its start is a no-op.
+      const originalQuaternion = mesh.vertexPivot.quaternion.clone();
+      events.mouseDown();
+      if (operation === 'rotate') mesh.vertexPivot.rotateZ(0.2);
+      else mesh.vertexPivot.scale.setScalar(1.2);
+      events.objectChange();
+      mesh.vertexPivot.quaternion.copy(originalQuaternion);
+      mesh.vertexPivot.scale.setScalar(1);
+      events.objectChange(); events.mouseUp();
+      assert.equal(app.history.undoHistory.length, 1);
+      assert.deepEqual(e.takeSnapshot(), after);
+      e.click('undo'); assert.deepEqual(e.takeSnapshot(), before);
+      assert.equal(mesh.vertexPivot.parent, null);
+      e.click('redo'); assert.deepEqual(e.takeSnapshot(), after);
+    }
+  });
+}
+
+test('Edit Mode transform shortcuts persist across selection, respect drag/typing locks, and restore Object Mode', () => {
+  const e = editor(), app = e.app, mesh = app.mesh, canvas = app.viewport.renderer.domElement;
+  const key = (code, target = canvas) => window.listeners.keydown({code, target, preventDefault() {}});
+  app.selection.selectObject(e.objects[0]);
+  e.click('scale-mode');
+  e.click('edit-mode');
+  key('KeyR');
+  assert.equal(e.transformControls.getMode(), 'rotate');
+  assert.equal(e.transformControls.object, null);
+  mesh.selectVertexMarker(mesh.vertexMarkers[0]);
+  mesh.selectVertexMarker(mesh.vertexMarkers[2], true);
+  assert.equal(e.transformControls.getMode(), 'rotate');
+  assert.equal(e.transformControls.object, mesh.vertexPivot);
+  key('KeyS', new HTMLInputElement());
+  assert.equal(e.transformControls.getMode(), 'rotate');
+  key('KeyS');
+  assert.equal(e.transformControls.getMode(), 'scale');
+  key('Digit2');
+  mesh.selectEdgeMarker(mesh.edgeMarkers[0]);
+  assert.equal(e.transformControls.getMode(), 'scale');
+  e.transformControls.dragging = true;
+  key('KeyM'); e.click('rotate-mode');
+  e.find('#transform-space').listeners.change({target: {value: 'local'}});
+  assert.equal(e.transformControls.getMode(), 'scale');
+  assert.equal(e.transformControls.space, 'world');
+  e.transformControls.dragging = false;
+  key('KeyM');
+  assert.equal(e.transformControls.getMode(), 'translate');
+  e.click('rotate-mode');
+  e.click('edit-mode');
+  assert.equal(e.transformControls.getMode(), 'scale');
+  assert.equal(e.transformControls.object, app.state.selectedObject);
+  assert.equal(mesh.vertexPivot.parent, null);
+});
+
+test('switching to a component transform leaves Extrude/Inset and preserves one-face tools afterward', () => {
+  for (const name of ['extrude', 'inset']) {
+    const e = editor(), mesh = e.app.mesh, tool = e.app[`${name}Tool`];
+    e.app.selection.selectObject(e.objects[0]);
+    e.click('edit-mode'); e.click('face-mode');
+    mesh.selectFaceByTriangle(0);
+    tool.setActive(true);
+    e.find('#transform-space').listeners.change({target: {value: 'local'}});
+    assert.equal(e.transformControls.object, null);
+    assert.equal(tool.active, true);
+    e.click('rotate-mode');
+    assert.equal(tool.active, false);
+    assert.equal(e.transformControls.getMode(), 'rotate');
+    assert.equal(e.transformControls.object, mesh.vertexPivot);
+    tool.setActive(true);
+    const pointer = x => ({button: 0, pointerId: 6, clientX: x, preventDefault() {}, stopPropagation() {}});
+    tool.begin(pointer(0));
+    e.click('scale-mode');
+    assert.equal(e.transformControls.getMode(), 'rotate');
+    tool.end(pointer(60));
+    assert.equal(e.objects[0].geometry.index.count, 60);
+    assert.equal(mesh.selectedFaceIndex, 0);
+    e.click('scale-mode');
+    assert.equal(tool.active, false);
+    assert.equal(e.transformControls.getMode(), 'scale');
+    assert.equal(e.transformControls.object, mesh.vertexPivot);
+  }
+});
+
+for (const operation of ['rotate', 'scale']) {
+  test(`native TransformControls ${operation} raycasts, snapping and history work on component geometry`, () => {
+    const e = editor({createTransformControls: camera => new TransformControls(camera)});
+    const app = e.app, mesh = app.mesh, controls = e.transformControls;
+    app.selection.selectObject(e.objects[0]);
+    e.click('edit-mode'); e.click('face-mode');
+    mesh.selectFaceByTriangle(0);
+    e.click(operation === 'rotate' ? 'rotate-mode' : 'scale-mode');
+    e.find(operation === 'rotate' ? '#rotation-snap' : '#scale-snap').listeners.change({
+      target: {value: operation === 'rotate' ? '45' : '0.25'}
+    });
+    const center = mesh.vertexPivot.position.clone();
+    const camera = app.viewport.camera;
+    camera.position.copy(center).add(new THREE.Vector3(0, 0, 8));
+    camera.lookAt(center); camera.updateProjectionMatrix(); camera.updateMatrixWorld(true);
+    app.viewport.scene.add(controls.getHelper());
+    controls.axis = operation === 'rotate' ? 'Z' : 'Y';
+    app.viewport.scene.updateMatrixWorld(true);
+    const pointer = (offset, button) => {
+      const ndc = offset.clone().add(center).project(camera);
+      return {x: ndc.x, y: ndc.y, button};
+    };
+    const markers = [...mesh.selectedVertexMarkers].map(marker => ({marker, start: marker.position.clone()}));
+    const before = e.takeSnapshot();
+    const start = operation === 'rotate' ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0.4, 1, 0);
+    const end = operation === 'rotate' ? new THREE.Vector3(Math.cos(Math.PI / 6), Math.sin(Math.PI / 6), 0)
+      : new THREE.Vector3(0.4, 1.3, 0);
+    controls.pointerDown(pointer(start, 0));
+    assert.equal(controls.dragging, true);
+    assert.ok(mesh.vertexTransform);
+    assert.equal(app.viewport.controls.enabled, false);
+    controls.pointerMove(pointer(end, -1));
+    const field = app.ui.propertyInputs.find(item => item.property === (operation === 'rotate' ? 'rotation' : 'scale') &&
+      item.axis === (operation === 'rotate' ? 'z' : 'y')).input;
+    const expectedValue = operation === 'rotate' ? '45' : '1.25';
+    assert.equal(field.value, expectedValue);
+    assert.equal(field.disabled, true);
+    controls.pointerUp({button: 0});
+    assert.equal(field.value, expectedValue);
+    assert.equal(field.disabled, false);
+    assert.equal(controls.dragging, false);
+    assert.equal(app.viewport.controls.enabled, true);
+    assert.equal(app.history.undoHistory.length, 1);
+    for (const {marker, start} of markers) {
+      const expected = start.clone().sub(center);
+      if (operation === 'rotate') expected.applyAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 4);
+      else expected.y *= 1.25;
+      assert.ok(marker.position.distanceTo(expected.add(center)) < 1e-10);
+    }
+    const after = e.takeSnapshot();
+    // Adjust the actual gizmo operation numerically without adding its angle/factor twice.
+    const numeric = operation === 'rotate' ? 60 : 1.6;
+    field.value = String(numeric); field.valueAsNumber = numeric;
+    field.listeners.change();
+    assert.equal(field.value, String(numeric));
+    assert.equal(app.history.undoHistory.length, 2);
+    for (const {marker, start} of markers) {
+      const expected = start.clone().sub(center);
+      if (operation === 'rotate') expected.applyAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 3);
+      else expected.y *= numeric;
+      assert.ok(marker.position.distanceTo(expected.add(center)) < 1e-10);
+    }
+    const adjusted = e.takeSnapshot();
+    e.click('undo'); assert.deepEqual(e.takeSnapshot(), after);
+    e.click('undo'); assert.deepEqual(e.takeSnapshot(), before);
+    e.click('redo'); e.click('redo'); assert.deepEqual(e.takeSnapshot(), adjusted);
+  });
+}
+
+for (const mode of ['vertex', 'edge', 'face']) {
+  test(`selection inspector numerically adjusts the last ${mode} edit in World and Local space`, () => {
+    for (const space of ['world', 'local']) for (const property of ['position', 'rotation', 'scale']) {
+      const e = editor(), app = e.app, mesh = app.mesh, object = e.objects[0];
+      object.position.set(2, -1, 3);
+      object.rotation.set(0.2, 0.4, -0.3);
+      object.scale.set(2, 0.75, 1.5);
+      selectMeshComponents(e, mode);
+      e.find('#transform-space').listeners.change({target: {value: space}});
+      const input = (property, axis) => app.ui.propertyInputs.find(item => item.property === property && item.axis === axis).input;
+      assert.equal(e.find('#transform-title').textContent, 'Selection transform');
+      assert.equal(e.find('#transform-context').textContent, 'Last edit');
+      assert.equal(input('rotation', 'x').value, '0');
+      assert.equal(input('scale', 'x').value, '1');
+      const center = mesh.vertexPivot.position.clone();
+      const frame = mesh.vertexPivot.quaternion.clone();
+      const markers = mesh.vertexMarkers.map(marker => ({
+        marker, start: object.localToWorld(marker.position.clone()), selected: mesh.selectedVertexMarkers.has(marker)
+      }));
+      const before = e.takeSnapshot();
+      const axis = property === 'rotation' ? 'z' : property === 'scale' ? 'y' : 'x';
+      const values = property === 'rotation' ? [45, 60] : property === 'scale' ? [1.25, 2] : [1.5, 2.5];
+      const field = input(property, axis);
+      for (const value of values) {
+        field.value = String(value); field.valueAsNumber = value;
+        field.listeners.input(); // Typing alone does not make intermediate undo steps.
+        field.listeners.change();
+        assert.equal(field.value, String(value));
+      }
+      assert.equal(app.history.undoHistory.length, 2);
+      field.listeners.change();
+      assert.equal(app.history.undoHistory.length, 2);
+      const amount = values[1];
+      for (const {marker, start, selected} of markers) {
+        const expected = start.clone();
+        if (selected) {
+          expected.sub(center).applyQuaternion(frame.clone().invert());
+          if (property === 'rotation') expected.applyAxisAngle(new THREE.Vector3(0, 0, 1), THREE.MathUtils.degToRad(amount));
+          else if (property === 'scale') expected.y *= amount;
+          else expected.x += amount;
+          expected.applyQuaternion(frame).add(center);
+        }
+        assert.ok(object.localToWorld(marker.position.clone()).distanceTo(expected) < 1e-10);
+      }
+      const after = e.takeSnapshot();
+      for (const property of ['position', 'rotation', 'scale', 'topology']) {
+        assert.deepEqual(after.objects[0][property], before.objects[0][property]);
+      }
+      e.click('undo'); e.click('undo'); assert.deepEqual(e.takeSnapshot(), before);
+      assert.equal(e.find('#transform-title').textContent, 'Object transform');
+      e.click('redo'); e.click('redo'); assert.deepEqual(e.takeSnapshot(), after);
+    }
+  });
+}
+
+test('selection inspector commits Enter once, starts fresh after selection/space changes, and restores object values', () => {
+  const e = editor(), app = e.app, mesh = app.mesh, object = e.objects[0];
+  object.rotation.y = 0.3;
+  selectMeshComponents(e, 'face');
+  const rotation = app.ui.propertyInputs.find(item => item.property === 'rotation' && item.axis === 'z').input;
+  rotation.blur = () => { rotation.listeners.change(); rotation.listeners.blur(); };
+  rotation.value = '45'; rotation.valueAsNumber = 45;
+  rotation.listeners.input();
+  assert.equal(app.history.undoHistory.length, 0);
+  rotation.listeners.keydown({key: 'Enter', preventDefault() {}});
+  assert.equal(app.history.undoHistory.length, 1);
+  assert.equal(rotation.value, '45');
+  e.click('scale-mode');
+  assert.equal(rotation.value, '45');
+  const geometry = object.geometry.attributes.position.array.slice();
+  mesh.selectFaceByTriangle(8, true);
+  assert.equal(rotation.value, '0');
+  assert.equal(mesh.componentTransformBase, null);
+  assert.deepEqual(object.geometry.attributes.position.array, geometry);
+  assert.equal(e.find('#selection-name').textContent, `${object.name} · 3 faces selected`);
+  assert.equal(mesh.setComponentTransformValue('position', 'x', 0.5), true);
+  e.find('#transform-space').listeners.change({target: {value: 'local'}});
+  assert.equal(rotation.value, '0');
+  assert.equal(mesh.componentTransformValues.position.x, 0);
+  mesh.selectFaceByTriangle(null);
+  assert.equal(rotation.value, '');
+  assert.equal(rotation.disabled, true);
+  assert.match(e.find('#property-hint').textContent, /Select vertices/);
+  e.click('edit-mode');
+  assert.equal(e.find('#transform-title').textContent, 'Object transform');
+  const objectRotation = app.ui.propertyInputs.find(item => item.property === 'rotation' && item.axis === 'y').input;
+  assert.equal(Number(objectRotation.value), Number(THREE.MathUtils.radToDeg(0.3).toFixed(4)));
+  assert.equal(objectRotation.disabled, false);
+});
+
+test('selection numeric edits reject invalid values and stay disabled during gizmo/face tool operations', () => {
+  for (const name of ['extrude', 'inset']) {
+    const e = editor(), app = e.app, mesh = app.mesh, tool = app[`${name}Tool`];
+    app.selection.selectObject(e.objects[0]); e.click('edit-mode'); e.click('face-mode');
+    mesh.selectFaceByTriangle(0);
+    const field = app.ui.propertyInputs.find(item => item.property === 'position' && item.axis === 'x').input;
+    const before = e.takeSnapshot();
+    for (const value of [NaN, Infinity, 1e300]) {
+      field.value = String(value); field.valueAsNumber = value;
+      field.listeners.change();
+      assert.deepEqual(e.takeSnapshot(), before);
+      assert.equal(app.history.undoHistory.length, 0);
+      assert.equal(field.value, '0');
+    }
+    e.transformControls.dragging = true;
+    assert.equal(mesh.setComponentTransformValue('position', 'x', 2), false);
+    e.transformControls.dragging = false;
+    tool.setActive(true);
+    assert.equal(field.disabled, true);
+    assert.equal(mesh.setComponentTransformValue('position', 'x', 2), false);
+    assert.deepEqual(e.takeSnapshot(), before);
+    const pointer = x => ({button: 0, pointerId: 7, clientX: x, preventDefault() {}, stopPropagation() {}});
+    tool.begin(pointer(0)); tool.end(pointer(60));
+    tool.setActive(false);
+    assert.equal(field.disabled, false);
+    assert.equal(field.value, '0');
+    assert.equal(mesh.componentTransformBase, null);
+    assert.equal(e.objects[0].geometry.index.count, 60);
+    assert.equal(mesh.setComponentTransformValue('position', 'x', 0.5), true);
+    assert.equal(field.value, '0.5');
+  }
+});
+
+test('switching component modes and exiting Edit Mode clear all multi-selection state', () => {
+  const e = editor(), mesh = e.app.mesh;
+  e.app.selection.selectObject(e.objects[0]);
+  e.click('edit-mode'); e.click('edge-mode');
+  mesh.selectEdgeMarker(mesh.edgeMarkers[0]);
+  mesh.selectEdgeMarker(mesh.edgeMarkers[1], true);
+  e.click('face-mode');
+  assert.equal(mesh.selectedEdgeMarkers.size, 0);
+  assert.equal(mesh.selectedVertexMarkers.size, 0);
+  assert.equal(e.transformControls.object, null);
+  mesh.selectFaceByTriangle(0);
+  mesh.selectFaceByTriangle(4, true);
+  e.click('vertex-mode');
+  assert.equal(mesh.selectedFaceIndices.size, 0);
+  assert.equal(mesh.faceHighlight.parent, null);
+  assert.equal(mesh.selectedVertexMarkers.size, 0);
+  e.click('face-mode');
+  mesh.selectFaceByTriangle(0);
+  mesh.selectFaceByTriangle(4, true);
+  e.click('edit-mode');
+  assert.equal(mesh.selectedFaceIndices.size, 0);
+  assert.equal(mesh.faceHighlight.parent, null);
+  assert.equal(mesh.vertexPivot.parent, null);
+  assert.equal(e.transformControls.object, e.objects[0]);
+});
+
+test('Extrude and Inset return to the shared gizmo for multiple faces and still edit a single face', () => {
+  for (const name of ['extrude', 'inset']) {
+    const e = editor(), mesh = e.app.mesh;
+    e.app.selection.selectObject(e.objects[0]);
+    e.click('edit-mode'); e.click('face-mode');
+    const tool = e.app[`${name}Tool`];
+    mesh.selectFaceByTriangle(0);
+    tool.setActive(true);
+    assert.equal(tool.active, true);
+    assert.equal(e.transformControls.object, null);
+    mesh.selectFaceByTriangle(4, true);
+    assert.equal(tool.active, false);
+    assert.equal(tool.canActivate(), false);
+    assert.equal(e.find('#extrude-tool').disabled, true);
+    assert.equal(e.find('#inset-tool').disabled, true);
+    assert.equal(e.transformControls.object, mesh.vertexPivot);
+    tool.setActive(true);
+    assert.equal(tool.active, false);
+    mesh.selectFaceByTriangle(5, true);
+    assert.equal(mesh.selectedFaceIndex, 0);
+    assert.equal(e.find('#extrude-tool').disabled, false);
+    assert.equal(e.find('#inset-tool').disabled, false);
+    tool.setActive(true);
+    // Replacing the single face keeps the face tool active on the new face.
+    mesh.selectFaceByTriangle(4);
+    assert.equal(tool.active, true);
+    assert.equal(mesh.selectedFaceIndex, 2);
+    assert.equal(e.transformControls.object, null);
+    const before = e.takeSnapshot();
+    const event = x => ({button: 0, pointerId: 7, clientX: x, preventDefault() {}, stopPropagation() {}});
+    tool.begin(event(0)); tool.end(event(60));
+    assert.equal(e.objects[0].geometry.index.count, 60);
+    assert.deepEqual([...mesh.selectedFaceIndices], [2]);
+    assert.equal(mesh.selectedVertexMarkers.size, 4);
+    assert.equal(e.app.history.undoHistory.length, 1);
+    const after = e.takeSnapshot();
+    // Newly generated walls participate in the same multi-selection lifecycle.
+    mesh.selectFaceByTriangle(12, true);
+    assert.deepEqual([...mesh.selectedFaceIndices], [2, 6]);
+    assert.equal(mesh.faceHighlightGeometry.attributes.position.count, 12);
+    assert.equal(e.transformControls.object, mesh.vertexPivot);
+    mesh.selectFaceByTriangle(13, true);
+    tool.setActive(true);
+    // Toggling the last face off must also turn off the active tool.
+    mesh.selectFaceByTriangle(5, true);
+    assert.equal(tool.active, false);
+    assert.equal(e.transformControls.object, null);
+    assert.equal(mesh.faceHighlight.parent, null);
+    e.click('undo'); assert.deepEqual(e.takeSnapshot(), before);
+    e.click('redo'); assert.deepEqual(e.takeSnapshot(), after);
+  }
 });
 
 test('no-op edits preserve redo; a new action clears redo and restores object IDs', () => {
@@ -668,6 +1271,148 @@ test('manual Bevel supports cancel/history/duplicate/editing and rejects detaile
   assert.match(e.find('#tool-status').textContent,/unsubdivided/);
 });
 
+test('selected-edge Bevel previews, cancels, repeats, preserves transforms and supports history/duplicate', () => {
+  const e = editor(), app = e.app, mesh = app.mesh, object = e.objects[0], tool = app.bevelTool;
+  object.position.set(3, -2, 1);
+  object.rotation.set(0.3, -0.2, 0.4);
+  object.scale.set(2, 0.75, 1.5);
+  app.viewport.controls.enabled = true;
+  selectMeshComponents(e, 'edge');
+  const before = e.takeSnapshot(), original = object.geometry;
+  e.click('bevel-tool');
+  assert.equal(tool.active, true);
+  assert.equal(e.transformControls.object, null);
+  assert.equal(e.find('#bevel-tools').hidden, false);
+  const event = x => ({button: 0, pointerId: 19, clientX: x, preventDefault() {}, stopPropagation() {}});
+  tool.begin(event(0)); tool.move(event(60));
+  assert.equal(app.modifiers.transaction.name, 'edgeBevel');
+  assert.ok(object.geometry.index.count > 36);
+  assert.ok(mesh.edgeMarkers.every(edge => !edge.visible));
+  assert.equal(e.find('#edge-mode').disabled, true);
+  assert.equal(app.viewport.controls.enabled, false);
+  tool.cancel();
+  assert.equal(object.geometry, original);
+  assert.equal(app.modifiers.transaction, null);
+  assert.deepEqual(e.takeSnapshot(), before);
+  assert.equal(mesh.selectedEdgeMarkers.size, 2);
+  assert.ok(mesh.edgeMarkers.every(edge => edge.visible));
+  assert.equal(app.viewport.controls.enabled, true);
+  tool.begin(event(0)); tool.end(event(0));
+  assert.equal(app.history.undoHistory.length, 0);
+  assert.equal(mesh.selectedEdgeMarkers.size, 2);
+  const source = object.geometry;
+  tool.begin(event(0));
+  tool.move(event(30));
+  const intermediate = object.geometry;
+  let disposed = 0;
+  intermediate.addEventListener('dispose', () => disposed++);
+  tool.end(event(60));
+  assert.equal(disposed, 1);
+  assert.equal(app.history.undoHistory.length, 1);
+  assert.equal(mesh.selectedEdgeMarkers.size, 8);
+  assert.equal(object.geometry.userData.bevelEdgeIndices, undefined);
+  const expected = new EdgeBevelModifier().apply(source, {edges: tool.sourceEdges, amount: 0.125});
+  assert.deepEqual(object.geometry.attributes.position.array, expected.attributes.position.array);
+  expected.dispose();
+  for (const property of ['position', 'rotation', 'scale']) {
+    assert.deepEqual(e.takeSnapshot().objects[0][property], before.objects[0][property]);
+  }
+  const bevelled = e.takeSnapshot();
+  tool.begin(event(0)); tool.end(event(24)); // Bevel the newly selected rim segments.
+  assert.equal(app.history.undoHistory.length, 2);
+  assert.equal(mesh.selectedEdgeMarkers.size, 32);
+  e.click('move-mode');
+  assert.equal(tool.active, false);
+  assert.equal(e.transformControls.object, mesh.vertexPivot);
+  const events = e.transformControls.listeners;
+  events.mouseDown(); mesh.vertexPivot.position.y += 0.2; events.objectChange(); events.mouseUp();
+  assert.equal(app.history.undoHistory.length, 3);
+  const after = e.takeSnapshot();
+  e.click('undo'); e.click('undo'); assert.deepEqual(e.takeSnapshot(), bevelled);
+  e.click('undo'); assert.deepEqual(e.takeSnapshot(), before);
+  assert.equal(mesh.edgeMarkers.length, 0);
+  e.click('redo'); e.click('redo'); e.click('redo'); assert.deepEqual(e.takeSnapshot(), after);
+  e.click('duplicate');
+  assert.deepEqual(app.state.selectedObject.geometry.attributes.position.array, e.objects[0].geometry.attributes.position.array);
+  assert.deepEqual(app.state.selectedObject.geometry.index.array, e.objects[0].geometry.index.array);
+  assert.equal(app.state.selectedObject.children.length, 0);
+});
+
+test('edge Bevel follows multi-selection, turns off on mode/selection changes and locks numeric transforms', () => {
+  const e = editor(), app = e.app, mesh = app.mesh, tool = app.bevelTool;
+  app.selection.selectObject(e.objects[0]); e.click('edit-mode');
+  assert.equal(e.find('#bevel-tools').hidden, true);
+  e.click('edge-mode');
+  assert.equal(e.find('#bevel-tool').disabled, true);
+  mesh.selectEdgeMarker(mesh.edgeMarkers[0]);
+  assert.equal(e.find('#bevel-tool').disabled, false);
+  e.click('bevel-tool');
+  mesh.selectEdgeMarker(mesh.edgeMarkers[1], true);
+  assert.equal(tool.active, true);
+  assert.equal(mesh.selectedEdgeMarkers.size, 2);
+  assert.equal(e.transformControls.object, null);
+  assert.ok(app.ui.propertyInputs.every(({input}) => input.disabled));
+  assert.equal(mesh.setComponentTransformValue('position', 'x', 1), false);
+  mesh.selectEdgeMarker(null);
+  assert.equal(tool.active, false);
+  assert.equal(e.find('#bevel-tool').disabled, true);
+  mesh.selectEdgeMarker(mesh.edgeMarkers[0]); e.click('bevel-tool');
+  e.click('face-mode');
+  assert.equal(tool.active, false);
+  assert.equal(e.find('#bevel-tools').hidden, true);
+  e.click('edge-mode'); mesh.selectEdgeMarker(mesh.edgeMarkers[0]); e.click('bevel-tool');
+  e.click('rotate-mode');
+  assert.equal(tool.active, false);
+  assert.equal(e.transformControls.getMode(), 'rotate');
+  assert.equal(e.transformControls.object, mesh.vertexPivot);
+  assert.ok(app.ui.propertyInputs.every(({input}) => !input.disabled));
+});
+
+test('edge Bevel errors and capture loss restore topology, selection, controls and history', () => {
+  const e = editor(), app = e.app, mesh = app.mesh, tool = app.bevelTool;
+  app.selection.selectObject(e.objects[0]); e.click('edit-mode'); e.click('edge-mode');
+  mesh.selectEdgeMarker(mesh.edgeMarkers[0]);
+  const event = x => ({button: 0, pointerId: 20, clientX: x, preventDefault() {}, stopPropagation() {}});
+  app.viewport.controls.enabled = true;
+  const before = e.takeSnapshot(), original = e.objects[0].geometry;
+  e.click('bevel-tool'); tool.begin(event(0)); tool.move(event(48));
+  tool.handle.listeners.lostpointercapture();
+  assert.equal(e.objects[0].geometry, original);
+  assert.deepEqual(e.takeSnapshot(), before);
+  assert.equal(mesh.selectedEdgeMarkers.size, 1);
+  assert.equal(app.modifiers.transaction, null);
+  assert.equal(app.history.undoHistory.length, 0);
+  const p = original.attributes.position;
+  p.setX(0, p.getX(0) + 0.2); // Nonplanar source must fail without changing it.
+  const invalid = e.takeSnapshot();
+  tool.begin(event(0)); tool.move(event(48));
+  assert.equal(tool.dragging, false);
+  assert.equal(app.modifiers.transaction, null);
+  assert.equal(app.viewport.controls.enabled, true);
+  assert.deepEqual(e.takeSnapshot(), invalid);
+  assert.equal(mesh.selectedEdgeMarkers.size, 1);
+  assert.match(e.find('#tool-status').textContent, /flat convex/);
+});
+
+test('selected-edge Bevel remains editable with single-face Extrude/Inset and topology-aware Undo/Redo', () => {
+  const e = editor(), app = e.app, mesh = app.mesh;
+  selectMeshComponents(e, 'edge');
+  const before = e.takeSnapshot();
+  const event = x => ({button: 0, pointerId: 21, clientX: x, preventDefault() {}, stopPropagation() {}});
+  e.click('bevel-tool'); app.bevelTool.begin(event(0)); app.bevelTool.end(event(48));
+  assert.equal(app.history.undoHistory.length, 1);
+  e.click('face-mode'); mesh.selectFaceByTriangle(0);
+  e.click('extrude-tool'); app.extrudeTool.begin(event(0)); app.extrudeTool.end(event(30));
+  assert.equal(app.history.undoHistory.length, 2);
+  e.click('inset-tool'); app.insetTool.begin(event(0)); app.insetTool.end(event(30));
+  assert.equal(app.history.undoHistory.length, 3);
+  assert.equal(mesh.selectedFaceIndex, 0);
+  assert.equal(mesh.selectedVertexMarkers.size, 4);
+  const after = e.takeSnapshot();
+  e.click('undo'); e.click('undo'); e.click('undo'); assert.deepEqual(e.takeSnapshot(), before);
+  e.click('redo'); e.click('redo'); e.click('redo'); assert.deepEqual(e.takeSnapshot(), after);
+});
+
 
 test('toolbar shows tools for the current mode and keeps active-tool guidance synchronized', () => {
   const e=editor();
@@ -682,7 +1427,7 @@ test('toolbar shows tools for the current mode and keeps active-tool guidance sy
   assert.equal(e.find('#inset-tool').disabled,false);
   e.click('inset-tool'); assert.match(e.find('#tool-status').textContent,/INSET/);
   e.click('edge-mode'); assert.equal(e.app.insetTool.active,false);
-  assert.match(e.find('#tool-status').textContent,/Select a vertex/);
+  assert.match(e.find('#tool-status').textContent,/Ctrl\/Shift \+ click/);
 });
 
 test('object multiselection toggles, highlights, excludes parent/child and drives a shared transform pivot', () => {
@@ -957,7 +1702,7 @@ test('Ctrl and Meta clicks toggle objects in Outliner and viewport without chang
   assert.equal(app.state.selectedObject,a);
 });
 
-test('toolbar transform buttons share keyboard behavior and respect edit/drag locks', () => {
+test('toolbar transform buttons share keyboard behavior in Object/Edit Mode and respect drag locks', () => {
   const e = editor(), app = e.app;
   app.selection.selectObject(e.objects[0]);
   for (const [id,mode] of [['rotate-mode','rotate'],['scale-mode','scale'],['move-mode','translate']]) {
@@ -973,9 +1718,9 @@ test('toolbar transform buttons share keyboard behavior and respect edit/drag lo
   assert.equal(e.transformControls.getMode(),'rotate');
   e.transformControls.dragging = false;
   app.mesh.toggleEditMode();
-  assert.equal(e.find('#rotate-mode').disabled,true);
+  assert.equal(e.find('#rotate-mode').disabled,false);
   e.click('rotate-mode');
-  assert.equal(e.transformControls.getMode(),'translate');
+  assert.equal(e.transformControls.getMode(),'rotate');
 });
 
 test('object search retains group context, reports no results, and never changes selection', () => {

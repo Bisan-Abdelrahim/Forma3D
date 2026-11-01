@@ -34,10 +34,12 @@ export class ModifierDragTool {
     }
     this.active = active && this.canActivate() && !e.viewport.transformControls.dragging &&
       e.state.selectedObject?.userData.type === 'Cube';
+    this.updateLabel();
     if (this.active) e.viewport.transformControls.detach();
     else if (e.state.selectedObject && !e.mesh.editMode) e.viewport.transformControls.attach(e.state.selectedObject);
     if (!this.active && e.mesh.editMode) e.mesh.updateVertexSelectionGizmo();
     this.update();
+    e.ui.updateProperties();
     e.ui.updateButtons();
   }
 
@@ -49,7 +51,8 @@ export class ModifierDragTool {
     this.handle.title = this.handle.title.split(' · Error:')[0];
     const status = document.getElementById('tool-status');
     if (status) status.textContent = '';
-    e.modifiers.beginPreview(this.name);
+    this.beforeBegin?.();
+    e.modifiers.beginPreview(this.modifierName ?? this.name);
     this.drag = { pointerId: event.pointerId, x: event.clientX, orbit: e.viewport.controls.enabled };
     e.viewport.controls.enabled = false;
     this.handle.setPointerCapture(event.pointerId);

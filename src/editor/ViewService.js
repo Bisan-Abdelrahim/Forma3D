@@ -13,7 +13,9 @@ export class ViewService {
     document.getElementById('ungroup').addEventListener('click', e.workflow.ungroup);
     document.getElementById('frame-selected').addEventListener('click', () => this.frameSelected());
     document.getElementById('transform-space').addEventListener('change', event => {
-      if (!this.busy()) e.viewport.transformControls.setSpace(event.target.value);
+      if (this.busy()) return;
+      e.viewport.transformControls.setSpace(event.target.value);
+      if (e.mesh.editMode) e.mesh.updateVertexSelectionGizmo();
     });
     for (const [id, method] of [['translation-snap','setTranslationSnap'], ['rotation-snap','setRotationSnap'], ['scale-snap','setScaleSnap']]) {
       document.getElementById(id).addEventListener('change', event => {

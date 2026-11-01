@@ -15,7 +15,7 @@ export class ModifierService {
 
   beginPreview(name, object = this.editor.state.selectedObject) {
     if (!this.editor.workflow.transformable(object) || this.editor.state.selectedObjects.length > 1 || this.transaction || !this.modifiers.has(name) || !object?.isMesh ||
-        object.userData.type !== 'Cube' || (['extrude','inset'].includes(name) ? !this.editor.mesh.editMode : this.editor.mesh.editMode) ||
+        object.userData.type !== 'Cube' || (['extrude','inset','edgeBevel'].includes(name) ? !this.editor.mesh.editMode : this.editor.mesh.editMode) ||
         this.editor.viewport.transformControls.dragging) throw new Error('Cannot start modifier drag');
     this.transaction = { name, object, original: object.geometry,
       before: this.editor.history.takeSnapshot() };

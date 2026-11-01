@@ -7,14 +7,21 @@ export class MeshEditor {
   initialize() {
     this.editMode = false;
     this.meshSelectionMode = 'vertex';
+    this.editTransformMode = 'translate';
     this.previousObjectTransformMode = 'translate';
     this.vertexMarkers = [];
     this.selectedVertexMarkers = new Set();
     this.vertexPivot = new THREE.Object3D();
-    this.previousPivotPosition = new THREE.Vector3();
+    this.vertexTransform = null;
+    this.componentTransformBase = null;
+    this.componentTransformValues = {
+      position: new THREE.Vector3(),
+      rotation: new THREE.Euler(),
+      scale: new THREE.Vector3(1, 1, 1)
+    };
     this.edgeMarkers = [];
-    this.selectedEdgeMarker = null;
-    this.selectedFaceIndex = null;
+    this.selectedEdgeMarkers = new Set();
+    this.selectedFaceIndices = new Set();
     this.vertexMarkerGeometry = new THREE.SphereGeometry(
       0.09, 12, 8
     );
@@ -68,7 +75,37 @@ export class MeshEditor {
 
   }
 
-  updateVertexSelectionGizmo = () => {
+  get selectedEdgeMarker() {
+    return this.selectedEdgeMarkers.size === 1
+      ? this.selectedEdgeMarkers.values().next().value
+      : null;
+  }
+
+  // Extrude and Inset operate on exactly one face.
+  get selectedFaceIndex() {
+    return this.selectedFaceIndices.size === 1
+      ? this.selectedFaceIndices.values().next().value
+      : null;
+  }
+
+  resetComponentTransform = () => {
+    this.componentTransformBase = null;
+    this.componentTransformValues.position.set(0, 0, 0);
+    this.componentTransformValues.rotation.set(0, 0, 0);
+    this.componentTransformValues.scale.set(1, 1, 1);
+  };
+
+  canEditComponentTransform = () => {
+    return this.editMode && this.selectedVertexMarkers.size > 0 &&
+      this.editor.state.selectedObjects.length === 1 &&
+      this.editor.workflow.transformable(this.editor.state.selectedObject) &&
+      !this.editor.viewport.transformControls.dragging &&
+      !this.editor.modifiers?.transaction &&
+      !this.editor.extrudeTool?.active && !this.editor.insetTool?.active && !this.editor.bevelTool?.active;
+  };
+
+  updateVertexSelectionGizmo = ({preserveTransform = false} = {}) => {
+    if (!preserveTransform) this.resetComponentTransform();
     // Refresh vertex colors
     for (const marker of this.vertexMarkers) {
       marker.material = this.selectedVertexMarkers.has(marker)
@@ -76,13 +113,17 @@ export class MeshEditor {
         : this.vertexMarkerMaterial;
     }
 
+    this.editor.viewport.transformControls.setMode(this.editTransformMode);
+
     if (
       !this.editMode ||
       !this.editor.state.selectedObject ||
-      this.selectedVertexMarkers.size === 0
+      this.selectedVertexMarkers.size === 0 ||
+      this.editor.extrudeTool?.active || this.editor.insetTool?.active || this.editor.bevelTool?.active
     ) {
       this.editor.viewport.transformControls.detach();
       this.vertexPivot.removeFromParent();
+      this.editor.ui.updateProperties();
       return;
     }
 
@@ -94,16 +135,27 @@ export class MeshEditor {
 
     center.divideScalar(this.selectedVertexMarkers.size);
 
-    if (this.vertexPivot.parent !== this.editor.state.selectedObject) {
+    const object = this.editor.state.selectedObject;
+    object.updateWorldMatrix(true, false);
+    center.applyMatrix4(object.matrixWorld);
+
+    // A scene-level pivot avoids inheriting nonuniform object/group scale.
+    if (this.vertexPivot.parent !== this.editor.viewport.scene) {
       this.vertexPivot.removeFromParent();
-      this.editor.state.selectedObject.add(this.vertexPivot);
+      this.editor.viewport.scene.add(this.vertexPivot);
     }
 
     this.vertexPivot.position.copy(center);
-    this.previousPivotPosition.copy(center);
+    this.vertexPivot.scale.setScalar(1);
+    if (this.editor.viewport.transformControls.space === 'local') {
+      object.getWorldQuaternion(this.vertexPivot.quaternion).normalize();
+    } else {
+      this.vertexPivot.quaternion.identity();
+    }
+    this.vertexPivot.updateMatrixWorld(true);
 
-    this.editor.viewport.transformControls.setMode('translate');
     this.editor.viewport.transformControls.attach(this.vertexPivot);
+    this.editor.ui.updateProperties();
   };
 
   selectVertexMarker = (marker, multiSelect = false) => {
@@ -130,12 +182,12 @@ export class MeshEditor {
   };
 
   clearFaceSelection = () => {
-    this.selectedFaceIndex = null;
+    this.selectedFaceIndices.clear();
     this.faceHighlight.removeFromParent();
   };
 
   clearEdgeMarkers = () => {
-    this.selectedEdgeMarker = null;
+    this.selectedEdgeMarkers.clear();
 
     for (const edge of this.edgeMarkers) {
       edge.removeFromParent();
@@ -145,6 +197,8 @@ export class MeshEditor {
   };
 
   clearVertexMarkers = () => {
+    this.vertexTransform = null;
+    this.resetComponentTransform();
     this.selectedVertexMarkers.clear();
 
     this.clearEdgeMarkers();
@@ -319,37 +373,75 @@ export class MeshEditor {
     this.updateEdgeMarkers();
   };
 
-  selectEdgeMarker = (edge) => {
+  selectEdgeMarker = (edge, multiSelect = false) => {
     if (!this.editMode || this.meshSelectionMode !== 'edge') {
       return;
     }
 
-    this.selectedEdgeMarker = edge;
-    this.selectedVertexMarkers.clear();
+    if (!multiSelect) {
+      this.selectedEdgeMarkers.clear();
+    }
 
     if (edge) {
+      if (multiSelect && this.selectedEdgeMarkers.has(edge)) {
+        this.selectedEdgeMarkers.delete(edge);
+      } else {
+        this.selectedEdgeMarkers.add(edge);
+      }
+    }
+
+    this.updateEdgeSelection();
+  };
+
+  updateEdgeSelection = () => {
+    if (this.editor.bevelTool?.active && !this.editor.bevelTool.canActivate()) this.editor.bevelTool.setActive(false);
+    // Rebuild the union so shared endpoints remain selected after a toggle.
+    this.selectedVertexMarkers.clear();
+
+    for (const selectedEdge of this.selectedEdgeMarkers) {
       this.selectedVertexMarkers.add(
-        edge.userData.startMarker
+        selectedEdge.userData.startMarker
       );
 
       this.selectedVertexMarkers.add(
-        edge.userData.endMarker
+        selectedEdge.userData.endMarker
       );
     }
 
     for (const item of this.edgeMarkers) {
-      item.material = item === this.selectedEdgeMarker
+      item.material = this.selectedEdgeMarkers.has(item)
         ? this.selectedEdgeMaterial
         : this.edgeMarkerMaterial;
     }
 
     this.updateVertexSelectionGizmo();
+    this.editor.ui.updateButtons();
+  };
+
+  rebuildEdgeSelection = (pairs) => {
+    this.showCubeVertices(this.editor.state.selectedObject);
+    for (const marker of this.vertexMarkers) marker.visible = false;
+    this.showCubeEdges();
+    const byIndex = new Map();
+    for (const marker of this.vertexMarkers) {
+      for (const index of marker.userData.vertexIndices) byIndex.set(index, marker);
+    }
+    const edgeKey = (a, b) => [a.uuid, b.uuid].sort().join(':');
+    const byMarkers = new Map(this.edgeMarkers.map(edge => [
+      edgeKey(edge.userData.startMarker, edge.userData.endMarker), edge
+    ]));
+    for (const [a, b] of pairs) {
+      const start = byIndex.get(a), end = byIndex.get(b);
+      const edge = start && end ? byMarkers.get(edgeKey(start, end)) : null;
+      if (edge) this.selectedEdgeMarkers.add(edge);
+    }
+    this.updateEdgeSelection();
   };
 
   updateFaceHighlight = () => {
     if (
       !this.editor.state.selectedObject ||
-      this.selectedFaceIndex === null
+      this.selectedFaceIndices.size === 0
     ) {
       this.faceHighlight.removeFromParent();
       return;
@@ -369,20 +461,32 @@ export class MeshEditor {
       return;
     }
 
-    const highlightPositions =
+    let highlightPositions =
       this.faceHighlightGeometry.getAttribute('position');
 
-    const start = this.selectedFaceIndex * 6;
-
-    for (let i = 0; i < 6; i++) {
-      const vertexIndex = index.getX(start + i);
-
-      highlightPositions.setXYZ(
-        i,
-        positions.getX(vertexIndex),
-        positions.getY(vertexIndex),
-        positions.getZ(vertexIndex)
+    const vertexCount = this.selectedFaceIndices.size * 6;
+    if (highlightPositions.count !== vertexCount) {
+      // Release the old GPU buffer before replacing it with a different size.
+      this.faceHighlightGeometry.dispose();
+      highlightPositions = new THREE.Float32BufferAttribute(
+        new Float32Array(vertexCount * 3), 3
       );
+      this.faceHighlightGeometry.setAttribute('position', highlightPositions);
+    }
+
+    let offset = 0;
+    for (const face of this.selectedFaceIndices) {
+      const start = face * 6;
+      for (let i = 0; i < 6; i++) {
+        const vertexIndex = index.getX(start + i);
+
+        highlightPositions.setXYZ(
+          offset++,
+          positions.getX(vertexIndex),
+          positions.getY(vertexIndex),
+          positions.getZ(vertexIndex)
+        );
+      }
     }
 
     highlightPositions.needsUpdate = true;
@@ -394,50 +498,56 @@ export class MeshEditor {
     }
   };
 
-  selectFaceByTriangle = (triangleIndex) => {
+  selectFaceByTriangle = (triangleIndex, multiSelect = false) => {
     if (!this.editMode || this.meshSelectionMode !== 'face') {
       return;
     }
-
-    this.selectedVertexMarkers.clear();
 
     const geometry = this.editor.state.selectedObject.geometry;
     const positions = geometry.getAttribute('position');
     const index = geometry.getIndex();
 
-    if (
-      triangleIndex === null ||
-      triangleIndex === undefined ||
-      !Number.isInteger(triangleIndex) ||
-      triangleIndex < 0 ||
-      triangleIndex >= (index?.count ?? 0) / 3 ||
-      !index ||
-      positions.count % 4 !== 0 ||
-      index.count !== positions.count / 4 * 6
-    ) {
-      this.clearFaceSelection();
-      this.updateVertexSelectionGizmo();
-      this.editor.ui.updateButtons();
-      return;
+    if (!multiSelect) {
+      this.selectedFaceIndices.clear();
     }
 
     // Every two triangles form one editable quad face.
-    this.selectedFaceIndex = Math.floor(triangleIndex / 2);
-
-    // Every editable quad retains four independent position entries.
-    const faceStart = this.selectedFaceIndex * 4;
-
-    // Find the four physical corner markers.
-    for (let i = faceStart; i < faceStart + 4; i++) {
-      const marker = this.vertexMarkers.find(item =>
-        item.userData.vertexIndices.includes(i)
-      );
-
-      if (marker) {
-        this.selectedVertexMarkers.add(marker);
+    if (
+      Number.isInteger(triangleIndex) &&
+      triangleIndex >= 0 &&
+      triangleIndex < (index?.count ?? 0) / 3 &&
+      index &&
+      positions.count % 4 === 0 &&
+      index.count === positions.count / 4 * 6
+    ) {
+      const face = Math.floor(triangleIndex / 2);
+      if (multiSelect && this.selectedFaceIndices.has(face)) {
+        this.selectedFaceIndices.delete(face);
+      } else {
+        this.selectedFaceIndices.add(face);
       }
     }
 
+    this.selectedVertexMarkers.clear();
+    for (const face of this.selectedFaceIndices) {
+      // Every editable quad retains four independent position entries.
+      const faceStart = face * 4;
+
+      // A Set moves shared physical corners exactly once.
+      for (let i = faceStart; i < faceStart + 4; i++) {
+        const marker = this.vertexMarkers.find(item =>
+          item.userData.vertexIndices.includes(i)
+        );
+
+        if (marker) {
+          this.selectedVertexMarkers.add(marker);
+        }
+      }
+    }
+
+    for (const tool of [this.editor.extrudeTool, this.editor.insetTool]) {
+      if (tool?.active && !tool.canActivate()) tool.setActive(false);
+    }
     this.updateVertexSelectionGizmo();
     this.updateFaceHighlight();
     if (this.editor.extrudeTool?.active || this.editor.insetTool?.active) this.editor.viewport.transformControls.detach();
@@ -463,6 +573,7 @@ export class MeshEditor {
 
     if (this.editor.extrudeTool?.active) this.editor.extrudeTool.setActive(false);
     if (this.editor.insetTool?.active) this.editor.insetTool.setActive(false);
+    if (this.editor.bevelTool?.active) this.editor.bevelTool.setActive(false);
     // Reset previous mode selection
     this.selectedVertexMarkers.clear();
 
@@ -485,31 +596,114 @@ export class MeshEditor {
     this.editor.ui.updateButtons();
   };
 
-  updateSelectedVertexGeometry = () => {
+  captureVertexTransform = () => {
+    const object = this.editor.state.selectedObject;
     if (
       !this.editMode ||
-      !this.editor.state.selectedObject ||
+      !object ||
       this.selectedVertexMarkers.size === 0 ||
-      this.vertexPivot.parent !== this.editor.state.selectedObject
+      this.editor.viewport.transformControls.object !== this.vertexPivot
     ) {
+      return null;
+    }
+
+    object.updateWorldMatrix(true, false);
+    if (Math.abs(object.matrixWorld.determinant()) < 1e-12) return null;
+    this.vertexPivot.updateMatrixWorld(true);
+    return {
+      object,
+      position: this.vertexPivot.position.clone(),
+      quaternion: this.vertexPivot.quaternion.clone(),
+      objectWorld: object.matrixWorld.clone(),
+      objectInverse: object.matrixWorld.clone().invert(),
+      pivotInverse: this.vertexPivot.matrixWorld.clone().invert(),
+      vertices: [...this.selectedVertexMarkers].map(marker => ({
+        marker, position: marker.position.clone()
+      }))
+    };
+  };
+
+  beginVertexTransform = () => {
+    this.vertexTransform = this.captureVertexTransform();
+    if (!this.vertexTransform) return;
+    this.resetComponentTransform();
+    this.editor.ui.updateProperties();
+  };
+
+  endVertexTransform = () => {
+    if (!this.vertexTransform) return;
+    this.componentTransformBase = this.vertexTransform;
+    this.vertexTransform = null;
+    // Bake the deformation into geometry and reset the gizmo's rotation/scale.
+    if (this.editMode) this.updateVertexSelectionGizmo({preserveTransform: true});
+  };
+
+  setComponentTransformValue = (property, axis, value) => {
+    if (!this.canEditComponentTransform() || !['position', 'rotation', 'scale'].includes(property) ||
+      !['x', 'y', 'z'].includes(axis) || !Number.isFinite(value)) return false;
+    const transform = this.componentTransformBase ?? this.captureVertexTransform();
+    if (!transform) return false;
+    const before = this.editor.history.takeSnapshot();
+    const values = this.componentTransformValues;
+    const previous = {
+      position: values.position.clone(), rotation: values.rotation.clone(), scale: values.scale.clone()
+    };
+    values[property][axis] = property === 'rotation' ? THREE.MathUtils.degToRad(value) : value;
+    this.vertexPivot.position.copy(transform.position)
+      .add(values.position.clone().applyQuaternion(transform.quaternion));
+    this.vertexPivot.quaternion.copy(transform.quaternion)
+      .multiply(new THREE.Quaternion().setFromEuler(values.rotation));
+    this.vertexPivot.scale.copy(values.scale);
+    this.vertexTransform = transform;
+    if (!this.updateSelectedVertexGeometry()) {
+      this.vertexTransform = null;
+      for (const key of ['position', 'rotation', 'scale']) values[key].copy(previous[key]);
+      this.updateVertexSelectionGizmo({preserveTransform: true});
+      return false;
+    }
+    this.endVertexTransform();
+    this.editor.history.recordAction(before);
+    return true;
+  };
+
+  updateSelectedVertexGeometry = () => {
+    const transform = this.vertexTransform;
+    if (!this.editMode || !transform || transform.object !== this.editor.state.selectedObject) {
       return;
     }
 
-    const delta = new THREE.Vector3().subVectors(
-      this.vertexPivot.position,
-      this.previousPivotPosition
+    this.vertexPivot.updateMatrixWorld(true);
+    // Convert the gizmo's world transform back into geometry coordinates.
+    const delta = transform.objectInverse.clone()
+      .multiply(this.vertexPivot.matrixWorld)
+      .multiply(transform.pivotInverse)
+      .multiply(transform.objectWorld);
+    if (!delta.elements.every(Number.isFinite)) return false;
+    const identity = delta.elements.every((value, i) =>
+      Math.abs(value - (i % 5 === 0 ? 1 : 0)) < 1e-12
     );
 
-    if (delta.lengthSq() < 1e-16) {
-      return;
-    }
+    const updates = transform.vertices.map(({marker, position}) => ({
+      marker, position: identity ? position.clone() : position.clone().applyMatrix4(delta)
+    }));
+    if (!updates.every(({position}) => position.toArray().every(value => Number.isFinite(Math.fround(value))))) return false;
 
-    const geometry = this.editor.state.selectedObject.geometry;
+    // These are relative values for the last edit, not object Euler angles.
+    const frameInverse = transform.quaternion.clone().invert();
+    this.componentTransformValues.position.copy(this.vertexPivot.position)
+      .sub(transform.position).applyQuaternion(frameInverse);
+    this.componentTransformValues.rotation.setFromQuaternion(
+      frameInverse.multiply(this.vertexPivot.quaternion), 'XYZ'
+    );
+    this.componentTransformValues.scale.copy(this.vertexPivot.scale);
+
+    const geometry = transform.object.geometry;
     const positions = geometry.getAttribute('position');
 
-    // Move all selected physical vertices.
-    for (const marker of this.selectedVertexMarkers) {
-      marker.position.add(delta);
+    // Always start from the drag's original positions, including when returning
+    // to the starting transform. Shared corners and duplicate entries stay welded.
+    for (const {marker, position} of updates) {
+      marker.position.copy(position);
 
       // Keep duplicate BoxGeometry entries together.
       for (const index of marker.userData.vertexIndices) {
@@ -521,8 +715,6 @@ export class MeshEditor {
         );
       }
     }
-
-    this.previousPivotPosition.copy(this.vertexPivot.position);
 
     positions.needsUpdate = true;
 
@@ -539,6 +731,7 @@ export class MeshEditor {
     if (this.meshSelectionMode === 'face') {
       this.updateFaceHighlight();
     }
+    return true;
   };
 
   toggleEditMode = () => {
@@ -577,6 +770,7 @@ export class MeshEditor {
 
       this.editMode = true;
       this.meshSelectionMode = 'vertex';
+      this.editTransformMode = 'translate';
 
       this.editor.viewport.transformControls.detach();
       this.editor.viewport.transformControls.setMode('translate');

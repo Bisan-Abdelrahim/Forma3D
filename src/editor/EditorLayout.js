@@ -54,7 +54,7 @@ export function editorLayout() {
       </details>
     </nav>
     <div class="history-actions"><button id="undo" class="icon-button" title="Undo" aria-label="Undo">${icon('undo')}</button><button id="redo" class="icon-button" title="Redo" aria-label="Redo">${icon('redo')}</button></div>
-    <span class="workspace-badge">Local workspace</span>
+    <span class="workspace-badge">Local</span>
   </header>
   <nav id="tool-shelf" aria-label="Modeling tools">
     <button id="edit-mode" class="mode-button" title="Switch Object / Edit Mode (Tab)">Object Mode</button>
@@ -83,18 +83,21 @@ export function editorLayout() {
       <footer class="outliner-footer"><p><kbd>Ctrl</kbd> + click to select multiple</p><span id="selection-count">No objects selected</span></footer>
     </aside>
     <section class="viewport-column" aria-label="3D workspace">
-      <div id="viewport"><div class="viewport-label" aria-hidden="true">FORMA3D <span>/</span> WORKSPACE</div></div>
+      <div id="viewport"></div>
       <footer class="viewport-footer"><p id="tool-status" role="status" aria-live="polite"></p><span><kbd>F</kbd> Frame selected</span></footer>
     </section>
     <aside class="inspector" aria-label="Selection and AI assistant">
       <div class="inspector-properties">
-        <div class="panel-heading"><h2>Selection</h2><span class="section-tag">INSPECTOR</span></div>
+        <div class="panel-heading"><h2>Selection</h2></div>
         <p id="selection-name">No selection</p>
         <p id="property-hint" class="property-hint">Select an object in the scene or Objects list.</p>
-        <details class="panel-section" open><summary>Transform <small>XYZ</small></summary><div id="properties"></div></details>
+        <details class="panel-section" open><summary><span id="transform-title">Object transform</span><small id="transform-context">XYZ</small></summary><div id="properties"></div></details>
         <details class="panel-section" id="shape-tools-panel"><summary>Shape tools <small id="active-shape-tool">Choose a tool</small></summary>
-          <div id="object-tools" class="shape-tools"><button id="skew-tool" aria-pressed="false">Skew</button><button id="taper-tool" aria-pressed="false">Taper</button><button id="bend-tool" aria-pressed="false">Bend</button><button id="bevel-tool" aria-pressed="false" title="Chamfer all edges of an unsubdivided cube">Bevel</button></div>
+          <div class="shape-tool-groups">
+          <div id="object-tools" class="shape-tools"><button id="skew-tool" aria-pressed="false">Skew</button><button id="taper-tool" aria-pressed="false">Taper</button><button id="bend-tool" aria-pressed="false">Bend</button></div>
+          <div id="bevel-tools" class="shape-tools"><button id="bevel-tool" aria-pressed="false" title="Chamfer all edges of an unsubdivided cube">Bevel</button></div>
           <div id="face-tools" class="shape-tools" hidden><button id="inset-tool" aria-pressed="false">Inset</button><button id="extrude-tool" aria-pressed="false">Extrude</button></div>
+          </div>
           <div id="tool-options"><div id="skew-axes" hidden><label>Tilt<select id="skew-axis"><option value="x">X</option><option value="y">Y</option><option value="z">Z</option></select></label><label>Along<select id="skew-relativeTo"><option value="x">X</option><option value="y" selected>Y</option><option value="z">Z</option></select></label></div>
           <div id="taper-options" hidden><label>Axis<select id="taper-axis"><option value="x">X</option><option value="y" selected>Y</option><option value="z">Z</option></select></label><label>End<select id="taper-end"><option value="positive">Positive (+)</option><option value="negative">Negative (−)</option></select></label></div>
           <div id="bend-options" hidden><label>Along<select id="bend-axis"><option value="x">X</option><option value="y" selected>Y</option><option value="z">Z</option></select></label><label>Toward<select id="bend-direction"><option value="x">X</option><option value="y">Y</option><option value="z">Z</option></select></label></div></div>
@@ -102,11 +105,11 @@ export function editorLayout() {
         </details>
       </div>
       <section id="ai-panel" aria-labelledby="ai-title">
-        <div class="ai-heading"><h2 id="ai-title">${icon('spark')} AI Assistant</h2><span class="local-badge">Local · Ollama</span></div>
-        <div class="ai-welcome"><span class="ai-mark">${icon('spark')}</span><h3>A little help shaping ideas.</h3><p>Describe one change to create or edit an object.</p></div>
+        <div class="ai-heading"><h2 id="ai-title">AI Assistant</h2><span class="local-badge">Ollama</span></div>
+        <div class="ai-welcome"><p>Create or edit an object with a short instruction.</p></div>
         <p id="ai-status" role="status" aria-live="polite">Ready for your instruction.</p>
-        <div class="ai-composer"><label class="sr-only" for="ai-instruction">AI instruction</label><textarea id="ai-instruction" rows="3" maxlength="2000" placeholder="Create a cube 4 units wide…"></textarea><div class="composer-footer"><span>Enter to send · Shift + Enter for a new line</span><button id="ai-send" title="Send instruction to local Ollama" aria-label="Send AI instruction">${icon('send')}</button></div></div>
-        <p class="ai-footnote">Uses your local Ollama model. One action at a time.</p>
+        <div class="ai-composer"><label class="sr-only" for="ai-instruction">AI instruction</label><textarea id="ai-instruction" rows="3" maxlength="2000" placeholder="Create a cube 4 units wide…"></textarea><div class="composer-footer"><span>Enter to send · Shift+Enter for newline</span><button id="ai-send" title="Send instruction to local Ollama" aria-label="Send AI instruction">${icon('send')}</button></div></div>
+        <p class="ai-footnote">Runs locally. One action at a time.</p>
       </section>
     </aside>
   </main>`;

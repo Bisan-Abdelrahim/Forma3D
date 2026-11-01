@@ -61,16 +61,54 @@ AI moves use explicit coordinates, independent of the manual gizmo's snap settin
 
 ## Modular editor and mesh editing
 
+### First-visit mode tips
+
+Small English notes point to the relevant tools the first time you enter Object
+Mode, mesh selection modes, transform modes or a shaping tool. One note is shown
+at a time; **Next** advances, **Got it** finishes, and **×** dismisses the entire
+explanation for that mode. Notes are nonmodal, do not take keyboard focus, and
+get out of the way when a modeling drag begins. Escape closes a note when an
+existing tool or menu has not already handled the key.
+
+Visits are stored in browser `localStorage` under `forma3d:mode-guides:v1`, keyed
+by mode rather than object or project. Switching objects, adding new objects,
+revisiting modes and reloading the same browser origin do not restart tips that
+were already shown. Unseen modes still get their own explanations. Clearing site
+data or using another browser starts fresh. If browser storage is unavailable,
+tips retain first-visit behavior for the current page session. `ModeGuide.js`
+owns this UI behavior separately from modeling and history services.
+
 `src/main.js` now only loads CSS and starts `EditorApp`. See
 [ARCHITECTURE.md](./ARCHITECTURE.md) for service responsibilities, history rules,
 and a concrete path for adding geometry tools.
 
 The current GitHub mesh-editing features are included: select a cube, choose
-**Edit Mode**, then **Vertex**, **Edge**, or **Face**. Move the selection with the
-translation gizmo. Shift-click adds/removes vertices. **Tab** switches modes when
-the canvas is focused; **1/2/3** switch mesh selection. **M/R/S** switch object
-Move/Rotate/Scale. Mesh editing currently supports the original cube topology;
-it does not implement extrusion, bevel, boolean operations, or arbitrary meshes.
+**Edit Mode**, then **Vertex**, **Edge**, or **Face**. Ctrl/Shift-click toggles
+multiple components; an ordinary click replaces the selection. **M/R/S** and
+the toolbar choose Move/Rotate/Scale in both Object and Edit Mode. Component
+transforms act around the average of the selected physical vertices, with each
+shared corner transformed once. **Tab** switches modes when the canvas is
+focused; **1/2/3** switch mesh selection. Editing supports cube-derived quad
+meshes, including Extrude/Inset/Bevel results; other primitive topology and
+Boolean operations remain future work. See [ROADMAP.md](./ROADMAP.md).
+
+World/Local controls the component gizmo axes. Rotation and scale are baked
+into the selected geometry while keeping the object's position, rotation and
+scale unchanged, including under transformed parents. Snapping applies to the
+chosen transform. Each complete drag records one undo action; returning to the
+starting transform creates no history. Choosing M/R/S exits a face shaping tool;
+Extrude and Inset still operate on one selected face.
+
+The inspector switches between **Object transform** and **Selection transform**.
+In Edit Mode it shows the last edit's move offset, rotation in degrees and scale
+factors in the chosen World/Local axes. Values update while dragging and remain
+visible after release. Enter a number and press Enter or leave the field to
+adjust that same edit; changing 45 degrees to 60 degrees replaces the angle.
+Each numeric commit is one undo action. Numeric entries use the precise entered
+value independently of gizmo snapping. A new selection, axis space or gizmo drag
+starts a fresh edit (offset/rotation zero, scale one). These are operation values,
+not an absolute orientation stored on each face or vertex. Selection values are
+unavailable during Extrude/Inset; exit the face tool to use them.
 
 Deformed vertices survive Duplicate and Undo/Redo. Undo/Redo restores objects and
 selection and exits Edit Mode. Grid snap applies to manual gizmo translation.
@@ -189,7 +227,8 @@ This first version is a single-segment, all-edge chamfer on a closed convex cube
 with six planar quad faces/eight corners. It supports original cubes and flat-faced
 Skew/Taper results. It rejects subdivided, extruded, inset, already bevelled,
 nonplanar or nonconvex meshes with a toolbar message and restores the original.
-Individual-edge selection and rounded multi-segment bevels are not implemented.
+Rounded multi-segment bevels are not implemented. Selected-edge chamfering is
+available through the Edit Mode workflow below.
 The bevel is proportional to adjacent edge lengths, not a constant world-space
 width. Object transforms/editor ID are preserved. Output uses independent quads
 for face patches, twelve chamfer strips and eight corner patches, preserving
@@ -198,3 +237,33 @@ BevelModifier owns validation/topology, BevelTool owns the gesture, and the
 existing ModifierDragTool/ModifierService provide preview, cleanup and history.
 This tool is manual only. Tests cover closure, orientation, nondegenerate faces,
 bounds, source preservation, cancel/no-op, undo/redo, duplicate and edit selection.
+
+### Bevel selected edges (Edit Mode)
+
+Select a cube-derived object → Edit Mode → Edge → select one or more edges with
+Ctrl/Shift-click → **Bevel**. Drag the yellow **Bevel edges** handle right to
+widen the chamfer, left to reduce it. As in Object Mode, 120 pixels corresponds
+to 25% of the adjacent local edge lengths; the maximum is 45%. The operation is
+a single-segment proportional chamfer, rather than a fixed world-space width.
+
+Adjacent edges share their corner treatment, and a lone bevel ends cleanly in
+the neighboring faces. The surface remains connected, using editable quads.
+On release, the new rim segments are selected so they can be bevelled again or
+moved/rotated/scaled. M/R/S, clicking Bevel again, or switching selection mode
+exits the tool. While previewing, old topology helpers are hidden; releasing or
+cancelling rebuilds them. Escape/capture loss restores the original geometry
+and source edge selection. A drag is one undo action; zero width adds no history.
+
+This path supports closed, consistently oriented quad meshes with flat convex
+individual faces, including compatible Skew/Taper, Extrude/Inset and previous
+Bevel results. The overall object may be concave. Invalid/nonplanar source faces
+are rejected with a status message and the original mesh restored. Output is
+limited to 8192 quads, matching the editor's bounded subdivision policy. There
+is no general self-intersection solver for extreme shapes or widths. Sphere
+and Cylinder editing remain future work.
+
+`EdgeBevelModifier` owns selected-edge topology; `BevelTool` chooses the existing
+Object Mode modifier or the new Edit Mode modifier. Preview/commit/cancel and
+history still belong to `ModifierService`. The operation preserves object ID
+and transforms, regenerates per-quad UVs, and retains topology-aware history and
+duplication. No dependencies were added.

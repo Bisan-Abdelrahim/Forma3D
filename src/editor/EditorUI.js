@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 import { editorLayout, icon } from './EditorLayout.js';
+import { ModeGuide } from './ModeGuide.js';
 
 export class EditorUI {
-  constructor(editor) { this.editor = editor; }
+  constructor(editor) { this.editor = editor; this.guide = new ModeGuide(editor); }
 
   bindToolbar() {
     this.bindSurface();
@@ -111,6 +112,7 @@ export class EditorUI {
     for (const [id, mode] of [['move-mode','translate'], ['rotate-mode','rotate'], ['scale-mode','scale']]) {
       document.getElementById(id).addEventListener('click', () => this.editor.input.setTransformMode(mode));
     }
+    this.guide.bind();
   }
 
   closeMenus(except = null) {
@@ -119,11 +121,13 @@ export class EditorUI {
 
   bindProperties() {
     this.propertyInputs = [];
+    this.propertyLegends = new Map();
     for (const property of ['position', 'rotation', 'scale']) {
       const fieldset = document.createElement('fieldset');
       const legend = document.createElement('legend');
 
       legend.textContent = property === 'rotation' ? 'Rotation °' : property;
+      this.propertyLegends.set(property, legend);
 
       fieldset.appendChild(legend);
 
@@ -188,6 +192,19 @@ export class EditorUI {
         });
 
         input.addEventListener('blur', this.updateProperties);
+        input.addEventListener('change', () => {
+          if (!this.editor.mesh.editMode) return;
+          if (input.value !== '' && input.validity.valid) {
+            this.editor.mesh.setComponentTransformValue(property, axis, input.valueAsNumber);
+          }
+          this.updateProperties();
+        });
+        input.addEventListener('keydown', event => {
+          if (this.editor.mesh.editMode && event.key === 'Enter') {
+            event.preventDefault();
+            input.blur();
+          }
+        });
       }
 
       this.properties.appendChild(fieldset);
@@ -255,31 +272,47 @@ export class EditorUI {
   };
 
   updateProperties = () => {
-    document.querySelector('#selection-name').textContent =
-      this.editor.state.selectedObject
-        ? (this.editor.state.selectedObjects.length > 1 ? `${this.editor.state.selectedObjects.length} objects selected` : this.editor.state.selectedObject.name)
-        : 'No selection';
+    const e = this.editor, mesh = e.mesh, object = e.state.selectedObject;
+    const editing = mesh.editMode;
+    const count = e.state.selectedObjects.length;
+    const componentCount = mesh.meshSelectionMode === 'edge' ? mesh.selectedEdgeMarkers.size
+      : mesh.meshSelectionMode === 'face' ? mesh.selectedFaceIndices.size : mesh.selectedVertexMarkers.size;
+    const componentName = componentCount === 1 ? mesh.meshSelectionMode
+      : {vertex: 'vertices', edge: 'edges', face: 'faces'}[mesh.meshSelectionMode];
+    document.querySelector('#selection-name').textContent = !object ? 'No selection'
+      : editing ? `${object.name} · ${componentCount} ${componentName} selected`
+      : count > 1 ? `${count} objects selected` : object.name;
+    document.getElementById('transform-title').textContent = editing ? 'Selection transform' : 'Object transform';
+    document.getElementById('transform-context').textContent = editing ? 'Last edit' : 'XYZ';
 
-    const count = this.editor.state.selectedObjects.length;
-    document.querySelector('#property-hint').textContent = count > 1
+    const shapingToolActive = e.extrudeTool?.active || e.insetTool?.active || e.bevelTool?.active;
+    const space = e.viewport.transformControls.space === 'local' ? 'Local' : 'World';
+    document.querySelector('#property-hint').textContent = editing
+      ? !componentCount ? 'Select vertices, edges or faces to edit their transform.'
+        : shapingToolActive ? 'Exit the shape tool to edit selection transform values.'
+        : `Last edit · ${space} axes. Enter or leave a field to apply. A new selection or drag starts a new edit.`
+      : count > 1
       ? 'Use the gizmo to transform together, or Object → Group Selection.'
-      : this.editor.mesh.editMode ? 'Editing mesh components. Use the selection tools.'
       : count ? 'Edit values below or use the gizmo in the viewport.' : 'Select an object in the scene or Objects list.';
 
+    for (const [property, legend] of this.propertyLegends) {
+      legend.textContent = property === 'rotation' ? 'Rotation °'
+        : editing ? (property === 'position' ? 'Move offset' : 'Scale factor') : property;
+    }
+    const values = editing ? (componentCount ? mesh.componentTransformValues : null)
+      : count === 1 ? object : null;
     for (const { input, property, axis } of this.propertyInputs) {
-      input.disabled =
-        !this.editor.state.selectedObject ||
-        this.editor.state.selectedObjects.length !== 1 ||
-        !this.editor.workflow.transformable(this.editor.state.selectedObject) ||
-        this.editor.mesh.editMode ||
-        (this.editor.viewport.transformControls.dragging || !!this.editor.modifiers?.transaction);
+      input.disabled = editing ? !mesh.canEditComponentTransform()
+        : !object || count !== 1 || !e.workflow.transformable(object) ||
+          e.viewport.transformControls.dragging || !!e.modifiers?.transaction;
+      input.setAttribute('aria-label', `${editing ? 'Selection ' : ''}${property} ${axis.toUpperCase()}`);
 
-      if (!this.editor.state.selectedObject || count > 1) {
+      if (!values) {
         input.value = '';
         continue;
       }
 
-      let value = this.editor.state.selectedObject[property][axis];
+      let value = values[property][axis];
 
       if (property === 'rotation') {
         value = THREE.MathUtils.radToDeg(value);
@@ -300,16 +333,18 @@ export class EditorUI {
     document.getElementById('object-tools').hidden = this.editor.mesh.editMode;
     document.getElementById('mesh-tools').hidden = !this.editor.mesh.editMode;
     document.getElementById('face-tools').hidden = !this.editor.mesh.editMode;
+    document.getElementById('bevel-tools').hidden = this.editor.mesh.editMode && this.editor.mesh.meshSelectionMode !== 'edge';
     const tools = [this.editor.skewTool,this.editor.taperTool,this.editor.bendTool,this.editor.bevelTool,this.editor.insetTool,this.editor.extrudeTool];
     const active = tools.find(tool => tool?.active);
     document.getElementById('active-shape-tool').textContent = active ? active.name : 'Choose a tool';
     if (active) document.getElementById('shape-tools-panel').open = true;
     const hint = document.getElementById('tool-status');
     hint.textContent = active ? `${active.name.toUpperCase()} · Drag the yellow handle · Esc cancels · Click the tool again to exit`
-      : this.editor.mesh.editMode ? 'Select a vertex, edge or face. In Face mode, select a face to use Inset or Extrude.'
+      : this.editor.mesh.editMode ? 'Ctrl/Shift + click: toggle selection · M: move · R: rotate · S: scale · Select one face for Inset or Extrude.'
       : 'Ctrl + click: multi-select · M: move · R: rotate · S: scale';
     const bevel = document.getElementById('bevel-tool');
-    bevel.disabled = dragging || this.editor.mesh.editMode || (this.editor.state.selectedObjects.length !== 1 || !this.editor.workflow.transformable(this.editor.state.selectedObject) || this.editor.state.selectedObject?.userData.type !== 'Cube');
+    bevel.disabled = dragging || !this.editor.bevelTool?.canActivate();
+    bevel.title = this.editor.mesh.editMode ? 'Chamfer selected edges' : 'Chamfer all edges of an unsubdivided cube';
     bevel.setAttribute('aria-pressed',String(this.editor.bevelTool?.active ?? false));
     const bend = document.getElementById('bend-tool');
     bend.disabled = dragging || this.editor.mesh.editMode || (this.editor.state.selectedObjects.length !== 1 || !this.editor.workflow.transformable(this.editor.state.selectedObject) || this.editor.state.selectedObject?.userData.type !== 'Cube');
@@ -372,7 +407,7 @@ export class EditorUI {
     document.getElementById('ungroup').disabled = workflow.busy() || selected.length !== 1 || !selected[0]?.isGroup || !workflow.transformable(selected[0]);
     document.getElementById('frame-selected').disabled = dragging || !selected.length;
     for (const id of ['transform-space','translation-snap','rotation-snap','scale-snap','view-preset','view-mode']) {
-      document.getElementById(id).disabled = dragging || (id === 'transform-space' && this.editor.mesh.editMode);
+      document.getElementById(id).disabled = dragging;
     }
     const editButton =
       document.querySelector('#edit-mode');
@@ -395,7 +430,7 @@ export class EditorUI {
 
     for (const [id, mode] of [['move-mode','translate'], ['rotate-mode','rotate'], ['scale-mode','scale']]) {
       const button = document.getElementById(id);
-      button.disabled = dragging || this.editor.mesh.editMode;
+      button.disabled = dragging;
       button.setAttribute('aria-pressed', String(!active && this.editor.viewport.transformControls.getMode() === mode));
     }
     // Mesh selection buttons
@@ -410,5 +445,6 @@ export class EditorUI {
         String(this.editor.mesh.editMode && this.editor.mesh.meshSelectionMode === mode)
       );
     }
+    this.guide.update();
   };
 }
