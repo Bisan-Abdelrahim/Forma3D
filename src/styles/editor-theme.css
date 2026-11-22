@@ -1,0 +1,55 @@
+/* Theme overrides only: editor layout, controls and modeling logic remain intact. */
+.editor-route { --line: #302c3c; --muted: #91879e; --blue: #a28ae4; --soft-blue: #332743; color-scheme: dark; }
+body.editor-route { background: #111017; color: #d5ccdf; }
+.editor-route #toolbar, .editor-route #tool-shelf { background: #17141e; border-color: #30273a; }
+.editor-route .brand { color: #e7dcf4; }
+.editor-route .brand .icon { color: #baa1ed; }
+.editor-route .project-title, .editor-route .workspace-badge { color: #9e8cb0; }
+.editor-route button, .editor-route select { background: #211a2a; color: #c9b8d9; border-color: #3a2d47; }
+.editor-route button:hover:enabled { background: #34263f; border-color: #69517e; }
+.editor-route button[aria-pressed="true"] { background: #3a2b4d; border-color: #70528c; color: #dfc2ff; }
+.editor-route .transform-tools button { background: transparent; border-color: transparent; }
+.editor-route .transform-tools button[aria-pressed="true"] { background: #3a2b4d; border-color: #5d4475; color: #ddc4fa; }
+.editor-route .icon-button, .editor-route .row-control { background: transparent; border-color: transparent; }
+.editor-route .dropdown > summary { color: #baaccb; }
+.editor-route .dropdown[open] > summary, .editor-route .dropdown > summary:hover { background: #35263f; color: #dfc2fb; }
+.editor-route #snap-menu > summary { background: #211a2a; border-color: #3b2e48; }
+.editor-route .menu-panel { background: #211929; border-color: #51405f; box-shadow: 0 12px 30px #0006; }
+.editor-route .menu-panel button { background: transparent; border-color: transparent; }
+.editor-route .menu-panel label, .editor-route .menu-heading, .editor-route .menu-note { color: #aa92bc; }
+.editor-route .menu-panel .danger { color: #dfa6b3; }
+.editor-route .objects-panel, .editor-route .inspector { background: #17121e; border-color: #302439; }
+.editor-route h2 { color: #d9c9e7; }
+.editor-route .count-badge { background: #30243d; color: #b69ccc; }
+.editor-route .search-box { background: #201628; border-color: #3b2949; color: #9276a9; }
+.editor-route .search-box input { color: #cab7db; }
+.editor-route .object-name, .editor-route .object-name.selected { background: transparent; }
+.editor-route .object-row:has(.selected) { background: #382648; }
+.editor-route .object-row.inherited-selection { background: #291e35; }
+.editor-route .object-name.selected, .editor-route .object-name.selected .icon { color: #d5b4fa; }
+.editor-route .row-control[aria-pressed="true"] { color: #d4ac76; background: #433024; }
+.editor-route .outliner-footer, .editor-route .panel-section { border-color: #31233d; }
+.editor-route #selection-name { color: #d0b7e3; }
+.editor-route .property-hint, .editor-route .section-help, .editor-route .outliner-footer, .editor-route .outliner-footer span { color: #967fa9; }
+.editor-route .axis-field { background: #22192b; border-color: #3b2949; }
+.editor-route .axis-field input { color: #d0b7e4; }
+.editor-route #ai-panel { background: #1a1322; border-color: #35243f; }
+.editor-route #ai-status { background: #251a2e; border-color: #452e53; color: #b496c8; }
+.editor-route .ai-composer { background: #211628; border-color: #4a305c; }
+.editor-route #ai-instruction { color: #d3b7e8; }
+.editor-route #ai-send { background: #a382cf; color: #1a1025; }
+.editor-route .ai-heading h2 .icon { color: #bd96e9; }
+.editor-route .viewport-footer { background: #19131f; border-color: #35253f; }
+.editor-route #tool-status { color: #ab8dc0; }
+.editor-route kbd { background: #2a1c34; border-color: #432a52; color: #b196c2; }
+.editor-projects-link { flex-shrink: 0; font-size: 11px; color: #b69acd; text-decoration: none; }
+.editor-projects-link:hover { color: #e1c4fa; }
+.editor-session-note { font-size: 9px; color: #b092c3; margin: 0; padding: 5px 15px; background: #21172b; border-bottom: 1px solid #372540; }
+@media (max-width:1100px) { .editor-route .workspace-badge { display: none; } }
+.editor-session-note { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.editor-session-note button { font-size:10px; min-height:27px; }
+#scene-status { flex:1; overflow-wrap:anywhere; }
+#ai-history { max-height:160px; overflow:auto; font-size:11px; }
+.ai-message { padding:8px; margin:5px 0; border-radius:6px; white-space:pre-wrap; overflow-wrap:anywhere; background:#2a2036; color:#c5b0da; }
+.ai-message-user { background:#242d43; }
+.editor-app.is-loading-scene { pointer-events:none; opacity:.75; }

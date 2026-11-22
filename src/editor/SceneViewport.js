@@ -6,7 +6,7 @@ export class SceneViewport {
   constructor(editor) { this.editor = editor; }
 
   start() {
-    window.addEventListener(
+    this.editor.listen(window,
       'resize',
       this.resizeRenderer
     );
@@ -70,7 +70,20 @@ export class SceneViewport {
     this.renderer.setSize(width, height);
   };
 
+  dispose() {
+    if (this.animationFrame !== undefined) cancelAnimationFrame(this.animationFrame);
+    this.resizeObserver?.disconnect();
+    this.transformControls?.detach();
+    this.transformControls?.dispose();
+    this.controls?.dispose();
+    this.renderer?.dispose();
+    this.renderer?.forceContextLoss();
+    this.renderer?.domElement.remove();
+    this.scene?.clear();
+  }
+
   animate = () => {
+    if (this.editor.disposed) return;
     this.animationFrame = requestAnimationFrame(this.animate);
 
     if (this.controls.enabled) {

@@ -35,6 +35,10 @@ export class EditorApp {
     requestAICommand
   } = {}) {
 
+    this.disposed = false;
+    this.events = new AbortController();
+    this.listenerCleanup = [];
+
     // User Interface
     this.ui = new EditorUI(this);
 
@@ -87,6 +91,51 @@ export class EditorApp {
     this.modifiers.register('bend', new BendModifier());
     this.modifiers.register('extrude', new ExtrudeModifier());
     this.modifiers.register('taper', new TaperModifier());
+  }
+
+  listen(target, type, handler, options) {
+    target.addEventListener(type, handler, options);
+    // Removed Outliner rows should be garbage-collected during long editing sessions.
+    // Only persistent targets need explicit removal when leaving the editor.
+    const localElement = typeof Element !== 'undefined' && target instanceof Element && target !== this.viewport.renderer?.domElement;
+    if (!localElement) this.listenerCleanup.push(() => target.removeEventListener?.(type, handler, options));
+  }
+
+  dispose() {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.events.abort();
+    this.ai.disposed = true;
+    for (const name of ['skewTool','taperTool','extrudeTool','insetTool','bevelTool','bendTool']) {
+      if (this[name]?.handle) this[name].dispose();
+      else this[name]?.events?.abort();
+    }
+    if (this.modifiers.transaction) this.modifiers.endPreview(false);
+    this.ui.guide?.dispose();
+    this.selection.endTransform();
+    if (this.mesh.vertexMarkers) this.mesh.clearVertexMarkers();
+    for (const cleanup of this.listenerCleanup.splice(0)) cleanup();
+    // Marker geometry is shared between markers, so dispose each resource once.
+    const geometries = new Set();
+    const materials = new Set();
+    const collect = object => {
+      if (object.geometry) geometries.add(object.geometry);
+      for (const material of [object.material].flat()) if (material) materials.add(material);
+    };
+    this.viewport.transformControls?.getHelper?.().removeFromParent();
+    this.viewport.scene?.traverse(collect);
+    for (const value of Object.values(this.mesh)) {
+      if (value?.isBufferGeometry) geometries.add(value);
+      if (value?.isMaterial) materials.add(value);
+    }
+    geometries.forEach(geometry => geometry.dispose());
+    materials.forEach(material => material.dispose());
+    this.viewport.dispose?.();
+    this.state.objects.length = 0;
+    this.state.selectedObjects.length = 0;
+    this.state.selectedObject = null;
+    this.history.undoHistory.length = 0;
+    this.history.redoHistory.length = 0;
   }
 
   start() {

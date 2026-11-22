@@ -25,3 +25,8 @@ dist-ssr
 
 # Local pre-refactor snapshots and one-off migration scripts
 .refactor-reference/
+
+# Keep deployment-specific configuration out of version control
+.env
+.env.*
+!.env.example

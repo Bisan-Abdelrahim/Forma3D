@@ -6,6 +6,7 @@ export class CommandService {
 
   executeCommand = (command) => {
     validateCommand(command);
+    if (this.editor.readOnly) throw new Error('This project is read-only.');
     if ((this.editor.viewport.transformControls.dragging || !!this.editor.modifiers?.transaction)) {
       throw new Error(
         'Finish dragging before using AI.'

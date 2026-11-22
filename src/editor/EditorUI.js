@@ -7,24 +7,24 @@ export class EditorUI {
 
   bindToolbar() {
     this.bindSurface();
-    document.getElementById('bevel-tool').addEventListener('click',this.editor.bevelTool.toggle);
-    document.getElementById('inset-tool').addEventListener('click', this.editor.insetTool.toggle);
-    document.getElementById('bend-tool').addEventListener('click', this.editor.bendTool.toggle);
-    for (const field of ['axis','direction']) document.getElementById(`bend-${field}`).addEventListener('change', event => {
+    this.editor.listen(document.getElementById('bevel-tool'),'click',this.editor.bevelTool.toggle);
+    this.editor.listen(document.getElementById('inset-tool'),'click', this.editor.insetTool.toggle);
+    this.editor.listen(document.getElementById('bend-tool'),'click', this.editor.bendTool.toggle);
+    for (const field of ['axis','direction']) this.editor.listen(document.getElementById(`bend-${field}`),'change', event => {
       const tool = this.editor.bendTool;
       let axis = field === 'axis' ? event.target.value : tool.axis;
       let direction = field === 'direction' ? event.target.value : tool.direction;
       if (axis === direction) { if (field === 'axis') direction = tool.axis; else axis = tool.direction; }
       tool.setOptions(axis,direction);
     });
-    document.getElementById('extrude-tool').addEventListener('click', this.editor.extrudeTool.toggle);
-    document.getElementById('taper-tool').addEventListener('click', this.editor.taperTool.toggle);
-    for (const field of ['axis', 'end']) document.getElementById(`taper-${field}`).addEventListener('change', event => {
+    this.editor.listen(document.getElementById('extrude-tool'),'click', this.editor.extrudeTool.toggle);
+    this.editor.listen(document.getElementById('taper-tool'),'click', this.editor.taperTool.toggle);
+    for (const field of ['axis', 'end']) this.editor.listen(document.getElementById(`taper-${field}`),'change', event => {
       const tool = this.editor.taperTool;
       tool.setOptions(field === 'axis' ? event.target.value : tool.axis, field === 'end' ? event.target.value : tool.side);
     });
     for (const field of ['axis', 'relativeTo']) {
-      document.getElementById(`skew-${field}`).addEventListener('change', event => {
+      this.editor.listen(document.getElementById(`skew-${field}`),'change', event => {
         const tool = this.editor.skewTool;
         let axis = field === 'axis' ? event.target.value : tool.axis;
         let relativeTo = field === 'relativeTo' ? event.target.value : tool.relativeTo;
@@ -36,34 +36,33 @@ export class EditorUI {
         tool.setAxes(axis, relativeTo);
       });
     }
-    document.querySelector('#skew-tool').addEventListener('click', this.editor.skewTool.toggle);
+    this.editor.listen(document.querySelector('#skew-tool'),'click', this.editor.skewTool.toggle);
 
     for (const type of ['Cube', 'Sphere', 'Cylinder']) {
-      document
-        .getElementById(`add-${type.toLowerCase()}`)
-        .addEventListener('click', () => {
+      this.editor.listen(document
+        .getElementById(`add-${type.toLowerCase()}`),'click', () => {
           this.editor.objects.addObject(type);
         });
     }
-    document.querySelector('#duplicate').addEventListener('click', this.editor.objects.duplicateSelectedObject);
-    document.querySelector('#delete').addEventListener(
+    this.editor.listen(document.querySelector('#duplicate'),'click', this.editor.objects.duplicateSelectedObject);
+    this.editor.listen(document.querySelector('#delete'),
       'click',
       () => this.editor.objects.deleteObject(this.editor.state.selectedObject)
     );
 
-    document.querySelector('#vertex-mode').addEventListener(
+    this.editor.listen(document.querySelector('#vertex-mode'),
       'click',
       () => this.editor.mesh.setMeshSelectionMode('vertex')
     );
-    document.querySelector('#edge-mode').addEventListener(
+    this.editor.listen(document.querySelector('#edge-mode'),
       'click',
       () => this.editor.mesh.setMeshSelectionMode('edge')
     );
-    document.querySelector('#face-mode').addEventListener(
+    this.editor.listen(document.querySelector('#face-mode'),
       'click',
       () => this.editor.mesh.setMeshSelectionMode('face')
     );
-    document.querySelector('#edit-mode').addEventListener(
+    this.editor.listen(document.querySelector('#edit-mode'),
       'click',
       this.editor.mesh.toggleEditMode
     );
@@ -74,17 +73,17 @@ export class EditorUI {
   bindSurface() {
     this.menus = ['add-menu', 'object-menu', 'view-menu', 'snap-menu'].map(id => document.getElementById(id));
     for (const menu of this.menus) {
-      menu.addEventListener('toggle', () => {
+      this.editor.listen(menu,'toggle', () => {
         if (menu.open) this.closeMenus(menu);
       });
-      menu.addEventListener('click', event => {
+      this.editor.listen(menu,'click', event => {
         const button = event.target.closest('button');
         if (button && !button.disabled) {
           menu.open = false;
           document.querySelector(`#${menu.id} > summary`).focus();
         }
       });
-      menu.addEventListener('keydown', event => {
+      this.editor.listen(menu,'keydown', event => {
         if (event.key === 'Escape') {
           event.preventDefault();
           event.stopPropagation();
@@ -101,16 +100,16 @@ export class EditorUI {
           items[next].focus();
         }
       });
-      menu.addEventListener('focusout', event => {
+      this.editor.listen(menu,'focusout', event => {
         if (event.relatedTarget && !menu.contains(event.relatedTarget)) menu.open = false;
       });
     }
-    window.addEventListener('pointerdown', event => {
+    this.editor.listen(window,'pointerdown', event => {
       if (!event.target.closest('.dropdown')) this.closeMenus();
     });
-    document.querySelector('#object-search').addEventListener('input', this.updateOutliner);
+    this.editor.listen(document.querySelector('#object-search'),'input', this.updateOutliner);
     for (const [id, mode] of [['move-mode','translate'], ['rotate-mode','rotate'], ['scale-mode','scale']]) {
-      document.getElementById(id).addEventListener('click', () => this.editor.input.setTransformMode(mode));
+      this.editor.listen(document.getElementById(id),'click', () => this.editor.input.setTransformMode(mode));
     }
     this.guide.bind();
   }
@@ -160,9 +159,9 @@ export class EditorUI {
           axis
         });
 
-        input.addEventListener('input', () => {
+        this.editor.listen(input,'input', () => {
           if (
-            !this.editor.state.selectedObject ||
+            this.editor.readOnly || !this.editor.state.selectedObject ||
             this.editor.state.selectedObjects.length !== 1 ||
             !this.editor.workflow.transformable(this.editor.state.selectedObject) ||
             this.editor.mesh.editMode ||
@@ -191,15 +190,15 @@ export class EditorUI {
           this.editor.history.recordAction(before);
         });
 
-        input.addEventListener('blur', this.updateProperties);
-        input.addEventListener('change', () => {
+        this.editor.listen(input,'blur', this.updateProperties);
+        this.editor.listen(input,'change', () => {
           if (!this.editor.mesh.editMode) return;
           if (input.value !== '' && input.validity.valid) {
             this.editor.mesh.setComponentTransformValue(property, axis, input.valueAsNumber);
           }
           this.updateProperties();
         });
-        input.addEventListener('keydown', event => {
+        this.editor.listen(input,'keydown', event => {
           if (this.editor.mesh.editMode && event.key === 'Enter') {
             event.preventDefault();
             input.blur();
@@ -241,8 +240,8 @@ export class EditorUI {
       row.classList.toggle('inherited-selection', e.state.selectedObjects.includes(object.parent));
       row.classList.toggle('unavailable', !e.workflow.editable(object));
       button.setAttribute('aria-pressed', String(e.state.selectedObjects.includes(object)));
-      button.disabled = e.workflow.busy() || !e.workflow.editable(object);
-      button.addEventListener('click', event => e.selection.selectObject(object, !!(event?.ctrlKey || event?.metaKey || event?.shiftKey)));
+      button.disabled = e.mesh.editMode || e.viewport.transformControls.dragging || !!e.modifiers.transaction || !e.workflow.editable(object);
+      this.editor.listen(button,'click', event => e.selection.selectObject(object, !!(event?.ctrlKey || event?.metaKey || event?.shiftKey)));
       row.appendChild(button);
       const controls = [];
       this.objectRows.push({ object, button, controls });
@@ -255,7 +254,7 @@ export class EditorUI {
         control.setAttribute('aria-label', `${action} ${object.name}`);
         control.setAttribute('aria-pressed', String(property === 'visible' ? !object.visible : !!object.userData.locked));
         control.disabled = e.workflow.busy();
-        control.addEventListener('click', () => e.workflow.toggle(object, property));
+        this.editor.listen(control,'click', () => e.workflow.toggle(object, property));
         row.appendChild(control);
         controls.push(control);
       }
@@ -302,9 +301,9 @@ export class EditorUI {
     const values = editing ? (componentCount ? mesh.componentTransformValues : null)
       : count === 1 ? object : null;
     for (const { input, property, axis } of this.propertyInputs) {
-      input.disabled = editing ? !mesh.canEditComponentTransform()
+      input.disabled = e.readOnly || (editing ? !mesh.canEditComponentTransform()
         : !object || count !== 1 || !e.workflow.transformable(object) ||
-          e.viewport.transformControls.dragging || !!e.modifiers?.transaction;
+          e.viewport.transformControls.dragging || !!e.modifiers?.transaction);
       input.setAttribute('aria-label', `${editing ? 'Selection ' : ''}${property} ${axis.toUpperCase()}`);
 
       if (!values) {
@@ -327,7 +326,7 @@ export class EditorUI {
   updateButtons = () => {
     const dragging = (this.editor.viewport.transformControls.dragging || !!this.editor.modifiers?.transaction);
     for (const row of this.objectRows ?? []) {
-      row.button.disabled = this.editor.workflow.busy() || !this.editor.workflow.editable(row.object);
+      row.button.disabled = this.editor.mesh.editMode || this.editor.viewport.transformControls.dragging || !!this.editor.modifiers.transaction || !this.editor.workflow.editable(row.object);
       for (const control of row.controls) control.disabled = this.editor.workflow.busy();
     }
     document.getElementById('object-tools').hidden = this.editor.mesh.editMode;
@@ -445,6 +444,10 @@ export class EditorUI {
         String(this.editor.mesh.editMode && this.editor.mesh.meshSelectionMode === mode)
       );
     }
+    if (this.editor.readOnly) {
+      for (const id of ['add-cube','add-sphere','add-cylinder','group','ungroup','duplicate','delete','undo','redo','edit-mode','move-mode','rotate-mode','scale-mode','skew-tool','taper-tool','bend-tool','bevel-tool','inset-tool','extrude-tool']) document.getElementById(id).disabled=true;
+    }
+    if(this.editor.readOnly)document.querySelector('#ai-send').disabled=true;
     this.guide.update();
   };
 }

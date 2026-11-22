@@ -3,7 +3,7 @@ import * as THREE from 'three';
 // Object-mode hierarchy, visibility and lock policy live in one place.
 export class ObjectWorkflow {
   constructor(editor) { this.editor = editor; }
-  busy() { return this.editor.mesh.editMode || this.editor.viewport.transformControls.dragging || !!this.editor.modifiers?.transaction; }
+  busy() { return this.editor.readOnly || this.editor.mesh.editMode || this.editor.viewport.transformControls.dragging || !!this.editor.modifiers?.transaction; }
   roots() { return this.editor.state.objects.filter(o => !this.editor.state.objects.includes(o.parent)); }
   visible(object) {
     for (let o = object; o && o !== this.editor.viewport.scene; o = o.parent) if (!o.visible) return false;

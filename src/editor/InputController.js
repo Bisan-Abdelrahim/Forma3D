@@ -5,6 +5,7 @@ export class InputController {
 
   setTransformMode(mode) {
     const e = this.editor;
+    if (e.readOnly) return;
     if (!['translate', 'rotate', 'scale'].includes(mode) || e.viewport.transformControls.dragging || e.modifiers?.transaction) return;
     for (const name of ['skewTool','taperTool','bendTool','bevelTool','extrudeTool','insetTool']) if (e[name]?.active) e[name].setActive(false);
     if (e.mesh.editMode) {
@@ -17,10 +18,10 @@ export class InputController {
   }
 
   bind() {
-    document.querySelector('#undo').addEventListener('click', this.editor.history.undo);
-    document.querySelector('#redo').addEventListener('click', this.editor.history.redo);
+    this.editor.listen(document.querySelector('#undo'),'click', this.editor.history.undo);
+    this.editor.listen(document.querySelector('#redo'),'click', this.editor.history.redo);
     this.dragStartSnapshot = null;
-    document.querySelector('#snap').addEventListener(
+    this.editor.listen(document.querySelector('#snap'),
       'change',
       event => {
         this.editor.viewport.transformControls.setTranslationSnap(
@@ -28,7 +29,7 @@ export class InputController {
         );
       }
     );
-    window.addEventListener('keydown', event => {
+    this.editor.listen(window,'keydown', event => {
       if (
         event.target instanceof HTMLInputElement ||
         event.target instanceof HTMLTextAreaElement ||
@@ -44,6 +45,7 @@ export class InputController {
 
       if (event.code === 'KeyF') { this.editor.views.frameSelected(); return; }
 
+      if (this.editor.readOnly) return;
       // Tab: Object / Edit Mode
       if (
         event.code === 'Tab' &&
@@ -77,7 +79,7 @@ export class InputController {
         return;
       }
     });
-    this.editor.viewport.transformControls.addEventListener(
+    this.editor.listen(this.editor.viewport.transformControls,
       'mouseDown',
       () => {
         this.dragStartSnapshot = this.editor.history.takeSnapshot();
@@ -85,7 +87,7 @@ export class InputController {
         this.editor.mesh.beginVertexTransform();
       }
     );
-    this.editor.viewport.transformControls.addEventListener(
+    this.editor.listen(this.editor.viewport.transformControls,
       'objectChange',
       () => {
         this.editor.selection.updateTransform();
@@ -94,7 +96,7 @@ export class InputController {
         this.editor.ui.updateProperties();
       }
     );
-    this.editor.viewport.transformControls.addEventListener(
+    this.editor.listen(this.editor.viewport.transformControls,
       'mouseUp',
       () => {
         if (this.dragStartSnapshot) {
@@ -106,7 +108,7 @@ export class InputController {
         this.editor.mesh.endVertexTransform();
       }
     );
-    this.editor.viewport.transformControls.addEventListener(
+    this.editor.listen(this.editor.viewport.transformControls,
       'dragging-changed',
       event => {
         this.editor.viewport.controls.enabled = !event.value;
@@ -120,7 +122,7 @@ export class InputController {
     this.mouse = new THREE.Vector2();
     this.clickStart = null;
     this.isDragging = false;
-    this.editor.viewport.renderer.domElement.addEventListener(
+    this.editor.listen(this.editor.viewport.renderer.domElement,
       'pointerdown',
       event => {
         if (event.button !== 0) return;
@@ -144,7 +146,7 @@ export class InputController {
         this.isDragging = false;
       }
     );
-    this.editor.viewport.renderer.domElement.addEventListener(
+    this.editor.listen(this.editor.viewport.renderer.domElement,
       'pointermove',
       event => {
         if (
@@ -164,7 +166,7 @@ export class InputController {
         }
       }
     );
-    this.editor.viewport.renderer.domElement.addEventListener(
+    this.editor.listen(this.editor.viewport.renderer.domElement,
       'pointerup',
       event => {
         if (
@@ -272,7 +274,7 @@ export class InputController {
         );
       }
     );
-    this.editor.viewport.renderer.domElement.addEventListener(
+    this.editor.listen(this.editor.viewport.renderer.domElement,
       'pointercancel',
       () => {
         this.clickStart = null;

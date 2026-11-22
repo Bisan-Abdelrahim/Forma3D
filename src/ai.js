@@ -260,7 +260,7 @@ return:
 `;
 
 // Send natural-language instructions to Ollama
-export async function requestCommand(message, context) {
+export async function requestCommand(message, context, { signal } = {}) {
   const response = await fetch(
     'http://localhost:11434/api/chat',
     {
@@ -270,7 +270,7 @@ export async function requestCommand(message, context) {
         'Content-Type': 'application/json'
       },
 
-      signal: AbortSignal.timeout(120000),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(120000)]) : AbortSignal.timeout(120000),
 
       body: JSON.stringify({
         model:

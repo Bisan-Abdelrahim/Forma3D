@@ -735,6 +735,7 @@ export class MeshEditor {
   };
 
   toggleEditMode = () => {
+    if (this.editor.readOnly) return;
     if (!this.editor.modifiers?.transaction && this.editor.bevelTool?.active) this.editor.bevelTool.setActive(false);
     if (!this.editor.modifiers?.transaction && this.editor.insetTool?.active) this.editor.insetTool.setActive(false);
     if (!this.editor.modifiers?.transaction && this.editor.bendTool?.active) this.editor.bendTool.setActive(false);

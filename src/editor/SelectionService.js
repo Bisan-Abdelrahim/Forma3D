@@ -4,6 +4,11 @@ export class SelectionService {
   constructor(editor) {
     this.editor = editor;
     this.pivot = new THREE.Object3D();
+    this.materialColors = new WeakMap();
+  }
+  baseColor(material) {
+    if (!this.materialColors.has(material)) this.materialColors.set(material, material.color.clone());
+    return this.materialColors.get(material);
   }
   selectObject = (object, toggle = false) => {
     const e = this.editor;
@@ -36,11 +41,14 @@ export class SelectionService {
     e.state.selectedObject = selection.at(-1) ?? null;
     for (const object of e.state.objects) if (object.isMesh) {
       const selected = selection.includes(object) || selection.includes(object.parent);
-      object.material.color.setHex(selected ? e.state.selectedColor : e.state.originalColor);
+      for (const material of [object.material].flat()) {
+        const base = this.baseColor(material);
+        if (selected) material.color.setHex(e.state.selectedColor); else material.color.copy(base);
+      }
     }
     const control = e.viewport.transformControls;
     control.detach();
-    const allowed = selection.every(o => !e.workflow || e.workflow.transformable(o));
+    const allowed = !e.readOnly && selection.every(o => !e.workflow || e.workflow.transformable(o));
     if (selection.length === 1 && allowed) control.attach(selection[0]);
     if (selection.length > 1 && allowed) {
       const box = new THREE.Box3();

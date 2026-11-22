@@ -1,3 +1,4 @@
+import { serializeScene, restoreScene, sceneObjectRows } from '../src/services/SceneSerializer.js';
 import { SceneViewport } from '../src/editor/SceneViewport.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { BevelModifier } from '../src/editor/modifiers/BevelModifier.js';
@@ -1765,4 +1766,91 @@ test('dropdowns close siblings and outside clicks, and Escape returns focus to t
   assert.equal(document.activeElement,one);
   add.listeners.keydown({key:'ArrowDown',preventDefault(){}});
   assert.equal(document.activeElement,two);
+});
+
+test('editor teardown aborts requests, removes owned listeners and releases resources exactly once', () => {
+  const e = editor(), app = e.app;
+  const target = new EventTarget(); let calls=0, disposedGeometry=0;
+  app.listen(target,'change',()=>calls++);
+  target.dispatchEvent(new Event('change')); assert.equal(calls,1);
+  const object = app.state.objects[0];
+  object.geometry.addEventListener('dispose',()=>disposedGeometry++);
+  app.dispose();
+  target.dispatchEvent(new Event('change'));
+  assert.equal(calls,1);
+  assert.equal(disposedGeometry,1);
+  assert.equal(app.events.signal.aborted,true);
+  assert.equal(app.listenerCleanup.length,0);
+  assert.equal(app.state.objects.length,0);
+  app.dispose(); assert.equal(disposedGeometry,1);
+});
+
+test('AI responses arriving after the editor is disposed cannot mutate a new page', async () => {
+  let resolveRequest;
+  const e=editor({requestAICommand:()=>new Promise(resolve=>{resolveRequest=resolve;})});
+  e.find('#ai-instruction').value='Create a cube';
+  const pending=e.app.ai.sendAIInstruction();
+  e.app.dispose();
+  resolveRequest({action:'create',shape:'cube'});
+  await pending;
+  assert.equal(e.app.state.objects.length,0);
+});
+
+test('partially initialized editors can be disposed after a startup failure', () => {
+  const app = new EditorApp();
+  assert.doesNotThrow(()=>app.dispose());
+  assert.equal(app.events.signal.aborted,true);
+  assert.doesNotThrow(()=>app.dispose());
+});
+
+test('complete scene persistence preserves edited buffers, base materials, hierarchy and stable IDs', () => {
+  const e=editor(),app=e.app;
+  const cube=e.objects[0];
+  app.modifiers.apply('skew',{axis:'x',relativeTo:'y',amount:0.35},cube);
+  cube.material.dispose();cube.material=new THREE.MeshStandardMaterial({color:0x123456,roughness:0.23,metalness:0.7,opacity:0.8,transparent:true});
+  const sphere=app.objects.addObject('Sphere');sphere.position.set(3,1,0);
+  app.selection.setSelection([cube,sphere]);app.workflow.group();
+  const group=app.state.selectedObject;group.rotation.y=0.4;group.scale.set(1.5,0.8,1.1);
+  app.views.mode='xray';app.views.applyMaterials();
+  const saved=serializeScene(app);
+  const savedCube=saved.objects.find(o=>o.id===cube.userData.editorId);
+  assert.equal(savedCube.materials[0].color,0x123456);
+  assert.equal(savedCube.materials[0].opacity,0.8);
+  const vertices=worldVertices(cube);
+  restoreScene(app,JSON.parse(JSON.stringify(saved)));
+  const restored=e.objects.find(o=>o.userData.editorId===savedCube.id);
+  assertVertices(worldVertices(restored),vertices);
+  assert.equal(restored.userData.persistentId,savedCube.persistentId);
+  assert.equal(restored.parent.userData.type,'Group');
+  assert.equal(restored.material.roughness,0.23);
+  assert.equal(restored.material.metalness,0.7);
+  assert.equal(serializeScene(app).objects.find(o=>o.id===savedCube.id).materials[0].color,0x123456);
+  assert.equal(app.history.undoHistory.length,0);
+  app.selection.selectObject(restored);app.objects.duplicateSelectedObject();
+  assert.notEqual(app.state.selectedObject.userData.persistentId,restored.userData.persistentId);
+  app.history.undo();app.history.redo();
+  assert.equal(app.state.selectedObject.material.roughness,0.23);
+});
+
+test('corrupt snapshots are rejected before modifying the live scene', () => {
+  const e=editor(),app=e.app;
+  const saved=serializeScene(app),before=JSON.stringify(app.history.takeSnapshot());
+  const malformed=structuredClone(saved);malformed.objects[0].parentId=malformed.objects[0].persistentId;
+  assert.throws(()=>restoreScene(app,malformed),/hierarchy/);
+  const invalid=structuredClone(saved);invalid.objects[0].geometry.data.attributes.position.array[0]=Infinity;
+  assert.throws(()=>restoreScene(app,invalid),/attribute/);
+  assert.equal(JSON.stringify(app.history.takeSnapshot()),before);
+  const row=sceneObjectRows(saved)[0];assert.equal(row.id,saved.objects[0].persistentId);
+});
+
+test('viewer editor cannot mutate models via shortcuts, Properties, history or commands', () => {
+  const e=editor(),app=e.app;
+  app.readOnly=true;app.selection.selectObject(e.objects[0]);app.ui.updateProperties();app.ui.updateButtons();
+  const before=JSON.stringify(app.history.takeSnapshot());
+  assert.equal(e.transformControls.object,null);
+  assert.equal(e.find('#group').disabled,true);
+  assert.equal(app.ui.propertyInputs[0].input.disabled,true);
+  app.objects.addObject('Cube');app.objects.deleteObject(e.objects[0]);app.mesh.toggleEditMode();app.input.setTransformMode('scale');
+  assert.throws(()=>app.commands.executeCommand({action:'delete',target:'selected'}),/read-only/);
+  assert.equal(JSON.stringify(app.history.takeSnapshot()),before);
 });

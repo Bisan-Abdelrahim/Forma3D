@@ -1,3 +1,4 @@
+import { materialSnapshot } from '../services/SceneSerializer.js';
 import { ShapeFactory } from './ShapeFactory.js';
 import * as THREE from 'three';
 
@@ -24,6 +25,11 @@ export class ObjectService {
       const duplicate = original.isGroup ? new THREE.Group() : this.createMesh(original.userData.type, this.getDimensions(original));
       if (original.isMesh) {
         duplicate.geometry.dispose();
+        duplicate.material.dispose();
+        const materials = [original.material].flat().map(material => {
+          const copy = new THREE.MaterialLoader().parse(materialSnapshot(material,e)); copy.uuid=crypto.randomUUID(); return copy;
+        });
+        duplicate.material = materials.length===1 ? materials[0] : materials;
         duplicate.geometry = original.geometry.clone();
         duplicate.geometry.parameters = { ...original.geometry.parameters };
       }
@@ -56,7 +62,8 @@ export class ObjectService {
 
     object.userData = {
       type,
-      editorId: this.editor.state.nextObjectId++
+      editorId: this.editor.state.nextObjectId++,
+      persistentId: crypto.randomUUID()
     };
   };
 
@@ -97,7 +104,7 @@ export class ObjectService {
     for (const item of removed) {
       e.state.objects.splice(e.state.objects.indexOf(item), 1);
       item.geometry?.dispose();
-      item.material?.dispose();
+      [item.material].flat().forEach(material=>material?.dispose());
     }
     e.ui.updateOutliner();
     e.history.recordAction(before);

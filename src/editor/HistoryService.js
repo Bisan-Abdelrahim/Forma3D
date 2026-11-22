@@ -1,3 +1,4 @@
+import { materialSnapshot } from '../services/SceneSerializer.js';
 import * as THREE from 'three';
 export class HistoryService {
   constructor(editor) {
@@ -7,7 +8,7 @@ export class HistoryService {
   }
 
   undo = () => {
-    if ((this.editor.viewport.transformControls.dragging || !!this.editor.modifiers?.transaction)) return;
+    if (this.editor.readOnly || (this.editor.viewport.transformControls.dragging || !!this.editor.modifiers?.transaction)) return;
     const action = this.undoHistory.pop();
     if (!action) return;
     this.redoHistory.push(action);
@@ -15,7 +16,7 @@ export class HistoryService {
   };
 
   redo = () => {
-    if ((this.editor.viewport.transformControls.dragging || !!this.editor.modifiers?.transaction)) return;
+    if (this.editor.readOnly || (this.editor.viewport.transformControls.dragging || !!this.editor.modifiers?.transaction)) return;
     const action = this.redoHistory.pop();
     if (!action) return;
     this.undoHistory.push(action);
@@ -26,6 +27,8 @@ export class HistoryService {
     return {
       objects: this.editor.state.objects.map(object => ({
         id: object.userData.editorId,
+        persistentId: object.userData.persistentId,
+        materials: object.isMesh ? [object.material].flat().map(material=>materialSnapshot(material,this.editor)) : [],
         type: object.userData.type,
         name: object.name,
 
@@ -74,6 +77,7 @@ export class HistoryService {
     this.redoHistory.length = 0;
 
     this.editor.ui.updateButtons();
+    this.onChange?.();
   };
 
   restoreSnapshot = (snapshot) => {
@@ -83,7 +87,7 @@ export class HistoryService {
     for (const object of this.editor.state.objects) {
       object.removeFromParent();
       object.geometry?.dispose();
-      object.material?.dispose();
+      [object.material].flat().forEach(material=>material?.dispose());
     }
 
     this.editor.state.objects.length = 0;
@@ -110,11 +114,17 @@ export class HistoryService {
         object.geometry.computeBoundingSphere();
       }
 
+      if (object.isMesh && saved.materials?.length) {
+        object.material.dispose();
+        const materials=saved.materials.map(json=>new THREE.MaterialLoader().parse(json));
+        object.material=materials.length===1?materials[0]:materials;
+      }
       object.name = saved.name;
 
       object.userData = {
         type: saved.type,
         editorId: saved.id,
+        persistentId: saved.persistentId ?? crypto.randomUUID(),
         locked: saved.locked ?? false
       };
 
@@ -139,5 +149,6 @@ export class HistoryService {
 
     const ids = snapshot.selectedIds ?? [snapshot.selectedId];
     this.editor.selection.setSelection(ids.map(id => this.editor.state.objects.find(o => o.userData.editorId === id)).filter(Boolean));
+    this.onChange?.();
   };
 }

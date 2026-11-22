@@ -1,3 +1,5 @@
+> Current data integration: see [SUPABASE.md](./SUPABASE.md). Auth and projects now use Supabase, and scene saves require the reviewed atomic-save migration. The old Phase 1 memory-only platform description below is historical.
+
 # Forma3D — modular Vanilla JavaScript editor
 
 HTML, CSS, vanilla JavaScript, Three.js and Vite only. AI returns one JSON
@@ -267,3 +269,13 @@ Object Mode modifier or the new Edit Mode modifier. Preview/commit/cancel and
 history still belong to `ModifierService`. The operation preserves object ID
 and transforms, regenerates per-quad UVs, and retains topology-aware history and
 duplication. No dependencies were added.
+
+## Frontend platform (Phase 1)
+
+The root URL now opens the Forma3D landing page. The original modeling editor is
+available at `/editor/demo`; dashboard and project-management previews are at
+`/dashboard` and `/projects`. Authentication forms are intentionally disconnected.
+Project metadata is memory-only, and editor scenes are not saved or loaded.
+See [PLATFORM.md](./PLATFORM.md) for routes, lifecycle cleanup, service boundaries,
+changed files, limitations and manual checks. The editor is lazy-loaded to keep
+Three.js off the landing-page startup path.

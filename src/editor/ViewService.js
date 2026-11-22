@@ -9,31 +9,31 @@ export class ViewService {
   busy() { return this.editor.viewport.transformControls.dragging || !!this.editor.modifiers?.transaction; }
   bind() {
     const e = this.editor;
-    document.getElementById('group').addEventListener('click', e.workflow.group);
-    document.getElementById('ungroup').addEventListener('click', e.workflow.ungroup);
-    document.getElementById('frame-selected').addEventListener('click', () => this.frameSelected());
-    document.getElementById('transform-space').addEventListener('change', event => {
+    this.editor.listen(document.getElementById('group'),'click', e.workflow.group);
+    this.editor.listen(document.getElementById('ungroup'),'click', e.workflow.ungroup);
+    this.editor.listen(document.getElementById('frame-selected'),'click', () => this.frameSelected());
+    this.editor.listen(document.getElementById('transform-space'),'change', event => {
       if (this.busy()) return;
       e.viewport.transformControls.setSpace(event.target.value);
       if (e.mesh.editMode) e.mesh.updateVertexSelectionGizmo();
     });
     for (const [id, method] of [['translation-snap','setTranslationSnap'], ['rotation-snap','setRotationSnap'], ['scale-snap','setScaleSnap']]) {
-      document.getElementById(id).addEventListener('change', event => {
+      this.editor.listen(document.getElementById(id),'change', event => {
         if (this.busy()) return;
         const value = Number(event.target.value);
         e.viewport.transformControls[method](value ? (id === 'rotation-snap' ? THREE.MathUtils.degToRad(value) : value) : null);
         if (id === 'translation-snap') document.getElementById('snap').checked = value === 1;
       });
     }
-    document.getElementById('view-preset').addEventListener('change', event => this.setPreset(event.target.value));
-    document.getElementById('view-mode').addEventListener('change', event => {
+    this.editor.listen(document.getElementById('view-preset'),'change', event => this.setPreset(event.target.value));
+    this.editor.listen(document.getElementById('view-mode'),'change', event => {
       this.mode = event.target.value;
       this.applyMaterials();
     });
   }
   applyMaterials() {
     for (const object of this.editor.state.objects) if (object.isMesh) {
-      const material = object.material;
+      for (const material of [object.material].flat()) {
       if (!this.materialDefaults.has(material)) this.materialDefaults.set(material, {
         wireframe: material.wireframe, transparent: material.transparent,
         opacity: material.opacity, depthWrite: material.depthWrite
@@ -42,6 +42,7 @@ export class ViewService {
       if (this.mode === 'wireframe') material.wireframe = true;
       if (this.mode === 'xray') { material.transparent = true; material.opacity = 0.3; material.depthWrite = false; }
       material.needsUpdate = true;
+      }
     }
   }
   setPreset(preset) {
